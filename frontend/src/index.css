@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/* theme = explicit data-theme on <html>, else OS prefers-color-scheme.
+   consume tokens via utilities (bg-surface, text-muted), never raw hex. */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* light (default) */
+:root {
+  --bg: #f5f5f4;
+  --surface: #ffffff;
+  --surface-2: #e7e5e4;
+  --border: #d6d3d1;
+  --text: #1c1917;
+  --muted: #57534e;
+  --primary: #65a30d;
+  --primary-contrast: #ffffff;
+  --accent: #eab308;
+  --danger: #dc2626;
+}
+
+/* dark via OS preference, unless explicitly overridden to light */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f2937;
+    --surface: #111827;
+    --surface-2: #374151;
+    --border: #374151;
+    --text: #f9fafb;
+    --muted: #9ca3af;
+    --primary: #65a30d;
+    --primary-contrast: #ffffff;
+    --accent: #facc15;
+    --danger: #ef4444;
+  }
+}
+
+/* dark via explicit toggle */
+[data-theme="dark"] {
+  --bg: #1f2937;
+  --surface: #111827;
+  --surface-2: #374151;
+  --border: #374151;
+  --text: #f9fafb;
+  --muted: #9ca3af;
+  --primary: #65a30d;
+  --primary-contrast: #ffffff;
+  --accent: #facc15;
+  --danger: #ef4444;
+}
+
+/* expose tokens to tailwind utilities */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-contrast: var(--primary-contrast);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+}
+
+@layer base {
+  html {
+    /* themes native controls and scrollbars */
+    color-scheme: light dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
