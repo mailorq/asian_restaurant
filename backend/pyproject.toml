@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asian-restaurant"
+version = "0.1.0"
+description = "Asian Restaurant"
+requires-python = ">=3.13"
+dependencies = [
+    "Django>=5.2,<5.3",
+    "django-ninja>=1.3",
+    "psycopg[binary]>=3.2",
+    "django-environ>=0.11",
+    "gunicorn>=23.0",
+    "whitenoise>=6.7",
+    "redis>=5.0",
+    "django-prometheus>=2.3",
+    "phonenumbers>=8.13",
+    "django-ratelimit>=4.1",
+    "Pillow>=10.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-django>=4.9",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "django-stubs>=5.1",
+]
+
+[tool.setuptools]
+packages = ["config", "accounts", "menu", "orders"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["mypy_django_plugin.main"]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py", "tests.py"]
+addopts = "-ra"
