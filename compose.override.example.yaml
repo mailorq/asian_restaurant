@@ -1,0 +1,31 @@
+# bootstrap: cp compose.override.example.yaml compose.override.yaml
+# the real compose.override.yaml is gitignored and tuned per machine
+
+services:
+  backend:
+    build:
+      target: dev
+    command: python manage.py runserver 0.0.0.0:8000
+    environment:
+      DJANGO_DEBUG: "1"
+      DJANGO_COOKIE_SECURE: "0"
+      DJANGO_MAKEMIGRATIONS: "1"
+      DJANGO_COLLECTSTATIC: "0"
+    volumes:
+      - ./backend:/app
+      - media:/app/media
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      target: dev
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      VITE_API_PROXY: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
