@@ -1,10 +1,10 @@
-# ── Secrets & local compose override ──────────────────────────────
+# secrets and local compose override
 .env
 .env.*
 !.env.example
 compose.override.yaml
 
-# ── Python / Django ───────────────────────────────────────────────
+# python / django
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -14,20 +14,20 @@ backend/staticfiles/
 backend/media/
 *.log
 
-# ── Prometheus multiprocess dir ───────────────────────────────────
+# prometheus multiprocess dir
 backend/.prometheus/
 
-# ── Node / Vite ───────────────────────────────────────────────────
+# node / vite
 node_modules/
 frontend/dist/
 frontend/.vite/
+*.tsbuildinfo
 npm-debug.log*
 
-# ── Seed assets (WebP product photos, source for the future menu seed) ──
-# Kept locally, not committed — binary content staged for the seeding step.
+# webp product photos, source for the future menu seed
 backend/seed/images/
 
-# ── Editors / OS ──────────────────────────────────────────────────
+# editors / os
 .idea/
 .vscode/
 .DS_Store
