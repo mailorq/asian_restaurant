@@ -1,7 +1,7 @@
 from ninja import NinjaAPI, Schema
 
-# session auth for a same-origin SPA requires CSRF
-api = NinjaAPI(title="Asian Restaurant API", version="1.0.0", csrf=True)
+# django-ninja auto-enforces csrf once cookie/session auth is attached
+api = NinjaAPI(title="Asian Restaurant API", version="1.0.0")
 
 
 class HealthOut(Schema):
