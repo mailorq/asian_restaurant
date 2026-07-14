@@ -5,48 +5,63 @@
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-/* light (default) */
+/* light (default) — premium warm stone + gold accent */
 :root {
-  --bg: #f5f5f4;
+  --bg: #fafaf9;
   --surface: #ffffff;
-  --surface-2: #e7e5e4;
-  --border: #d6d3d1;
+  --surface-2: #f4f2ef;
+  --border: #e6e2db;
   --text: #1c1917;
-  --muted: #57534e;
-  --primary: #65a30d;
-  --primary-contrast: #ffffff;
-  --accent: #eab308;
-  --danger: #dc2626;
+  --muted: #78716c;
+  --primary: #1c1917;
+  --primary-hover: #33302b;
+  --primary-contrast: #fafaf9;
+  --accent: #a16207;
+  --accent-hover: #854d0e;
+  --accent-contrast: #ffffff;
+  --danger: #b4413a;
+
+  --font-serif: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-sans: "Karla", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 220ms;
 }
 
 /* dark via OS preference, unless explicitly overridden to light */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1f2937;
-    --surface: #111827;
-    --surface-2: #374151;
-    --border: #374151;
-    --text: #f9fafb;
-    --muted: #9ca3af;
-    --primary: #65a30d;
-    --primary-contrast: #ffffff;
-    --accent: #facc15;
-    --danger: #ef4444;
+    --bg: #1a1714;
+    --surface: #211e19;
+    --surface-2: #2b2721;
+    --border: #39342c;
+    --text: #f5f1ea;
+    --muted: #a8a096;
+    --primary: #f5f1ea;
+    --primary-hover: #e7e1d6;
+    --primary-contrast: #1a1714;
+    --accent: #cba24c;
+    --accent-hover: #dab35f;
+    --accent-contrast: #1a1714;
+    --danger: #e5796f;
   }
 }
 
 /* dark via explicit toggle */
 [data-theme="dark"] {
-  --bg: #1f2937;
-  --surface: #111827;
-  --surface-2: #374151;
-  --border: #374151;
-  --text: #f9fafb;
-  --muted: #9ca3af;
-  --primary: #65a30d;
-  --primary-contrast: #ffffff;
-  --accent: #facc15;
-  --danger: #ef4444;
+  --bg: #1a1714;
+  --surface: #211e19;
+  --surface-2: #2b2721;
+  --border: #39342c;
+  --text: #f5f1ea;
+  --muted: #a8a096;
+  --primary: #f5f1ea;
+  --primary-hover: #e7e1d6;
+  --primary-contrast: #1a1714;
+  --accent: #cba24c;
+  --accent-hover: #dab35f;
+  --accent-contrast: #1a1714;
+  --danger: #e5796f;
 }
 
 /* expose tokens to tailwind utilities */
@@ -58,23 +73,69 @@
   --color-text: var(--text);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-contrast: var(--primary-contrast);
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
   --color-danger: var(--danger);
+
+  --font-display: var(--font-serif);
+  --font-sans: var(--font-sans);
 }
 
 @layer base {
   html {
     /* themes native controls and scrollbars */
     color-scheme: light dark;
+    scroll-behavior: smooth;
   }
 
   body {
     margin: 0;
-    min-height: 100vh;
+    min-height: 100dvh;
     background-color: var(--bg);
     color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-serif);
+  }
+
+  /* tabular figures keep prices from shifting layout */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* entrance motion, transform/opacity only */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+@layer utilities {
+  .anim-fade-up { animation: fade-up var(--dur) var(--ease-out) both; }
+  .anim-fade-in { animation: fade-in var(--dur) var(--ease-out) both; }
+  .anim-scale-in { animation: scale-in var(--dur) var(--ease-out) both; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
 }

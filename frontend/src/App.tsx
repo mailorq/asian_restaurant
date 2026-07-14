@@ -1,31 +1,33 @@
-import { useState } from "react";
+import { Header } from "./components/Header";
+import { Footer } from "./components/Footer";
+import { AuthModal } from "./components/AuthModal";
+import { CartModal } from "./components/CartModal";
+import { OrdersModal } from "./components/OrdersModal";
+import { ToastHost } from "./components/ToastHost";
+import { HomePage } from "./pages/HomePage";
+import { MenuPage } from "./pages/MenuPage";
+import { ProductPage } from "./pages/ProductPage";
+import { useUI } from "./stores/ui";
 
 export default function App() {
-  const [theme, setTheme] = useState<"light" | "dark">("dark");
-
-  function toggleTheme() {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.setAttribute("data-theme", next);
-  }
+  const view = useUI((s) => s.view);
+  const modal = useUI((s) => s.modal);
+  const viewKey = view.name === "product" ? `product-${view.id}` : view.name;
 
   return (
-    <main className="min-h-screen bg-bg text-text">
-      <header className="flex items-center justify-between border-b border-border bg-surface px-8 py-4">
-        <h1 className="text-2xl font-bold">Asian Restaurant</h1>
-        <button
-          onClick={toggleTheme}
-          className="rounded-lg bg-primary px-4 py-2 text-primary-contrast transition hover:opacity-80"
-        >
-          Тема: {theme}
-        </button>
-      </header>
+    <div className="flex min-h-dvh flex-col">
+      <Header />
+      <main key={viewKey} className="flex-1">
+        {view.name === "home" && <HomePage />}
+        {view.name === "menu" && <MenuPage />}
+        {view.name === "product" && <ProductPage id={view.id} />}
+      </main>
+      <Footer />
 
-      <section className="mx-auto max-w-3xl p-8">
-        <p className="text-muted">
-          Каркас архітектури готовий. Наступний крок — доменні моделі та API.
-        </p>
-      </section>
-    </main>
+      {modal === "auth" && <AuthModal />}
+      {modal === "cart" && <CartModal />}
+      {modal === "orders" && <OrdersModal />}
+      <ToastHost />
+    </div>
   );
 }
