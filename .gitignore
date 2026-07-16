@@ -26,6 +26,7 @@ npm-debug.log*
 
 # webp product photos, source for the future menu seed
 backend/seed/images/
+frontend/public/assets/menu-optimized/
 
 # editors / os
 .idea/
