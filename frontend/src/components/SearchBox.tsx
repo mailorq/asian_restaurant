@@ -49,7 +49,7 @@ export function SearchBox() {
               onMouseDown={() => pick(p.id)}
               className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-2"
             >
-              <ProductThumb category={p.category} name={p.name} className="h-11 w-11 shrink-0 rounded-lg" iconSize={22} />
+              <ProductThumb image={p.image} category={p.category} name={p.name} className="h-11 w-11 shrink-0 rounded-lg" iconSize={22} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{p.name}</span>
                 <span className="block text-xs text-muted">{CATEGORY_LABEL_ONE[p.category]}</span>

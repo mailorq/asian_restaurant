@@ -30,6 +30,7 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
         <ProductThumb
           category={product.category}
           name={product.name}
+          image={product.image}
           className="aspect-[4/3] transition-transform duration-500 group-hover:scale-[1.04]"
         />
         <span className="absolute left-3 top-3 rounded-full bg-surface/85 px-3 py-1 text-xs font-medium text-muted backdrop-blur-sm">

@@ -87,6 +87,7 @@ export function CartModal() {
               <ProductThumb
                 category={product.category}
                 name={product.name}
+                image={product.image}
                 className="h-16 w-16 shrink-0 rounded-xl"
                 iconSize={26}
               />

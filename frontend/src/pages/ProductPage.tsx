@@ -45,6 +45,7 @@ export function ProductPage({ id }: { id: number }) {
         <ProductThumb
           category={product.category}
           name={product.name}
+          image={product.image}
           className="anim-scale-in aspect-square rounded-3xl border border-border"
           iconSize={120}
         />
