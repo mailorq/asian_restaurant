@@ -3,6 +3,7 @@ import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
+import { formatUaPhone, isValidUaPhone } from "../lib/phone";
 
 function Field({
   label,
@@ -33,11 +34,17 @@ export function AuthModal() {
   const close = useUI((s) => s.closeModal);
   const notify = useToast((s) => s.notify);
   const [showPassword, setShowPassword] = useState(false);
+  const [phone, setPhone] = useState("+380 ");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
 
   const isLogin = tab === "login";
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!isLogin && !isValidUaPhone(phone)) {
+      setPhoneError("Введите номер в формате +380 (XX) XXX XX XX");
+      return;
+    }
     notify(isLogin ? "Вход выполнен" : "Регистрация успешна");
     close();
   }
@@ -58,6 +65,7 @@ export function AuthModal() {
         ))}
       </div>
 
+      <div key={tab} className="anim-fade-up">
       <form onSubmit={submit} className="flex flex-col gap-4">
         <Field label="Имя пользователя" required>
           <input className={inputCls} placeholder="ivan" autoComplete="username" required />
@@ -67,11 +75,18 @@ export function AuthModal() {
           <Field label="Телефон" required>
             <input
               type="tel"
-              className={inputCls}
-              placeholder="+7 900 000-00-00"
+              inputMode="tel"
+              value={phone}
+              onChange={(e) => {
+                setPhone(formatUaPhone(e.target.value));
+                setPhoneError(null);
+              }}
+              className={`${inputCls} ${phoneError ? "border-danger focus:border-danger focus:ring-danger/20" : ""}`}
+              placeholder="+380 (67) 123 45 67"
               autoComplete="tel"
               required
             />
+            {phoneError && <span className="mt-1 block text-xs text-danger">{phoneError}</span>}
           </Field>
         )}
 
@@ -88,9 +103,9 @@ export function AuthModal() {
               type="button"
               onClick={() => setShowPassword((v) => !v)}
               aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
-              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted hover:text-text"
+              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted transition-colors hover:text-accent"
             >
-              <Icon name={showPassword ? "moon" : "sun"} size={17} />
+              <Icon name={showPassword ? "eyeOff" : "eye"} size={18} />
             </button>
           </div>
         </Field>
@@ -112,6 +127,7 @@ export function AuthModal() {
           {isLogin ? "Зарегистрироваться" : "Войти"}
         </button>
       </p>
+      </div>
     </Modal>
   );
 }
