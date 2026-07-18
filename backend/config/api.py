@@ -1,9 +1,15 @@
 from ninja import NinjaAPI, Schema
 
 from accounts.api import router as auth_router
+from cart.api import router as cart_router
 
-# django-ninja auto-enforces csrf once cookie/session auth is attached
-api = NinjaAPI(title="Asian Restaurant API", version="1.0.0")
+# swagger ui served at /api/docs, openapi schema at /api/openapi.json (fastapi-style)
+api = NinjaAPI(
+    title="Asian Restaurant API",
+    version="1.0.0",
+    description="OpenAPI. Auth, Cart ...",
+    docs_url="/docs",
+)
 
 
 class HealthOut(Schema):
@@ -16,3 +22,4 @@ def health(request) -> dict:
 
 
 api.add_router("/auth", auth_router)
+api.add_router("/cart", cart_router)

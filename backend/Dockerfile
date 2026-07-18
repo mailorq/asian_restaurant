@@ -25,10 +25,11 @@ FROM base AS dev
 RUN pip install ".[dev]"
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
-# prod: gunicorn behind nginx
+# prod: gunicorn + uvicorn worker (asgi) behind nginx — async endpoints run concurrently
 FROM base AS prod
 EXPOSE 8000
-CMD ["gunicorn", "config.wsgi:application", \
+CMD ["gunicorn", "config.asgi:application", \
+     "-k", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "4", \
      "--timeout", "60", \

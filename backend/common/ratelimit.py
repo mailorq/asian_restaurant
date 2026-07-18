@@ -1,5 +1,7 @@
 import functools
+import inspect
 
+from asgiref.sync import sync_to_async
 from django.core.cache import cache
 from ninja.errors import HttpError
 
@@ -21,8 +23,27 @@ def _hit(bucket: str, window: int) -> int:
         return 1
 
 
+def _guard(hits: int, limit: int) -> None:
+    if hits > limit:
+        raise HttpError(429, "Слишком много запросов. Попробуйте позже.")
+
+
 def rate_limit(scope: str, limit: int, window: int):
     def decorator(view):
+        if inspect.iscoroutinefunction(view):
+
+            @functools.wraps(view)
+            async def awrapper(request, *args, **kwargs):
+                bucket = f"rl:{scope}:{_client_ip(request)}"
+                try:
+                    hits = await sync_to_async(_hit)(bucket, window)
+                except Exception:
+                    raise HttpError(503, "Сервис временно недоступен. Повторите позже.")
+                _guard(hits, limit)
+                return await view(request, *args, **kwargs)
+
+            return awrapper
+
         @functools.wraps(view)
         def wrapper(request, *args, **kwargs):
             bucket = f"rl:{scope}:{_client_ip(request)}"
@@ -30,8 +51,7 @@ def rate_limit(scope: str, limit: int, window: int):
                 hits = _hit(bucket, window)
             except Exception:
                 raise HttpError(503, "Сервис временно недоступен. Повторите позже.")
-            if hits > limit:
-                raise HttpError(429, "Слишком много запросов. Попробуйте позже.")
+            _guard(hits, limit)
             return view(request, *args, **kwargs)
 
         return wrapper
