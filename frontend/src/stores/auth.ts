@@ -1,28 +1,39 @@
 import { create } from "zustand";
 
-import { api } from "@/api/client";
+import { api } from "../api/client";
 
 export interface CurrentUser {
-  username: string;
+  id: number;
   phone: string | null;
 }
 
 interface AuthState {
   user: CurrentUser | null;
-  loading: boolean;
+  ready: boolean;
+  setUser: (user: CurrentUser | null) => void;
   refresh: () => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 export const useAuth = create<AuthState>((set) => ({
   user: null,
-  loading: false,
+  ready: false,
+  setUser: (user) => set({ user }),
   refresh: async () => {
-    set({ loading: true });
     try {
       const user = await api<CurrentUser>("/auth/me");
-      set({ user, loading: false });
+      set({ user, ready: true });
     } catch {
-      set({ user: null, loading: false });
+      set({ user: null, ready: true });
     }
+  },
+  logout: async () => {
+    try {
+      await api("/auth/csrf"); // fresh token for the current session
+      await api("/auth/logout", { method: "POST" });
+    } catch {
+      /* clear locally regardless */
+    }
+    set({ user: null });
   },
 }));

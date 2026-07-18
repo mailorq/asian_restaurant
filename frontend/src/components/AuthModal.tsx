@@ -3,6 +3,8 @@ import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
+import { useAuth, type CurrentUser } from "../stores/auth";
+import { api, ApiError } from "../api/client";
 import { formatUaPhone, isValidUaPhone } from "../lib/phone";
 
 function Field({
@@ -33,20 +35,38 @@ export function AuthModal() {
   const setTab = (t: "login" | "register") => useUI.setState({ authTab: t });
   const close = useUI((s) => s.closeModal);
   const notify = useToast((s) => s.notify);
+  const setUser = useAuth((s) => s.setUser);
+
   const [showPassword, setShowPassword] = useState(false);
   const [phone, setPhone] = useState("+380 ");
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const isLogin = tab === "login";
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!isLogin && !isValidUaPhone(phone)) {
+    setError(null);
+    if (!isValidUaPhone(phone)) {
       setPhoneError("Введите номер в формате +380 (XX) XXX XX XX");
       return;
     }
-    notify(isLogin ? "Вход выполнен" : "Регистрация успешна");
-    close();
+    const password = String(new FormData(e.currentTarget).get("password") ?? "");
+    setLoading(true);
+    try {
+      const user = await api<CurrentUser>(isLogin ? "/auth/login" : "/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ phone, password }),
+      });
+      setUser(user);
+      notify(isLogin ? "Вход выполнен" : "Добро пожаловать!");
+      close();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Что-то пошло не так");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -55,7 +75,10 @@ export function AuthModal() {
         {(["login", "register"] as const).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              setError(null);
+            }}
             className={`rounded-full py-2 text-sm font-medium transition-colors ${
               tab === t ? "bg-surface text-text shadow-sm" : "text-muted hover:text-text"
             }`}
@@ -66,12 +89,7 @@ export function AuthModal() {
       </div>
 
       <div key={tab} className="anim-fade-up">
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <Field label="Имя пользователя" required>
-          <input className={inputCls} placeholder="ivan" autoComplete="username" required />
-        </Field>
-
-        {!isLogin && (
+        <form onSubmit={submit} className="flex flex-col gap-4">
           <Field label="Телефон" required>
             <input
               type="tel"
@@ -88,45 +106,54 @@ export function AuthModal() {
             />
             {phoneError && <span className="mt-1 block text-xs text-danger">{phoneError}</span>}
           </Field>
-        )}
 
-        <Field label="Пароль" required>
-          <div className="relative">
-            <input
-              type={showPassword ? "text" : "password"}
-              className={`${inputCls} pr-11`}
-              placeholder="••••••••"
-              autoComplete={isLogin ? "current-password" : "new-password"}
-              required
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
-              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted transition-colors hover:text-accent"
-            >
-              <Icon name={showPassword ? "eyeOff" : "eye"} size={18} />
-            </button>
-          </div>
-        </Field>
+          <Field label="Пароль" required>
+            <div className="relative">
+              <input
+                name="password"
+                type={showPassword ? "text" : "password"}
+                className={`${inputCls} pr-11`}
+                placeholder="••••••••"
+                autoComplete={isLogin ? "current-password" : "new-password"}
+                required
+                minLength={8}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted transition-colors hover:text-accent"
+              >
+                <Icon name={showPassword ? "eyeOff" : "eye"} size={18} />
+              </button>
+            </div>
+          </Field>
 
-        <button
-          type="submit"
-          className="mt-1 h-11 rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.98]"
-        >
-          {isLogin ? "Войти" : "Создать аккаунт"}
-        </button>
-      </form>
+          {error && (
+            <p className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>
+          )}
 
-      <p className="mt-4 text-center text-sm text-muted">
-        {isLogin ? "Нет аккаунта? " : "Уже с нами? "}
-        <button
-          onClick={() => setTab(isLogin ? "register" : "login")}
-          className="font-medium text-accent hover:underline"
-        >
-          {isLogin ? "Зарегистрироваться" : "Войти"}
-        </button>
-      </p>
+          <button
+            type="submit"
+            disabled={loading}
+            className="mt-1 h-11 rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? "Подождите…" : isLogin ? "Войти" : "Создать аккаунт"}
+          </button>
+        </form>
+
+        <p className="mt-4 text-center text-sm text-muted">
+          {isLogin ? "Нет аккаунта? " : "Уже с нами? "}
+          <button
+            onClick={() => {
+              setTab(isLogin ? "register" : "login");
+              setError(null);
+            }}
+            className="font-medium text-accent hover:underline"
+          >
+            {isLogin ? "Зарегистрироваться" : "Войти"}
+          </button>
+        </p>
       </div>
     </Modal>
   );

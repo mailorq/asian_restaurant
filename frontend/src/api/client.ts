@@ -1,4 +1,14 @@
-// same-origin fetch wrapper; attaches the CSRF token on writes
+// same-origin fetch wrapper; attaches the csrf token on writes and surfaces the
+// server's error detail so the ui can show a meaningful message.
+
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 function getCookie(name: string): string | null {
   const match = document.cookie.match(new RegExp(`(^| )${name}=([^;]+)`));
   return match ? decodeURIComponent(match[2]) : null;
@@ -7,21 +17,26 @@ function getCookie(name: string): string | null {
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
-
+  if (init.body) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     const csrf = getCookie("csrftoken");
     if (csrf) headers.set("X-CSRFToken", csrf);
   }
 
-  const resp = await fetch(`/api${path}`, {
-    ...init,
-    headers,
-    credentials: "same-origin",
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`/api${path}`, { ...init, headers, credentials: "same-origin" });
+  } catch {
+    throw new ApiError("Сервер недоступен. Проверьте соединение.", 0);
+  }
+
+  const body = resp.headers.get("content-type")?.includes("application/json")
+    ? await resp.json().catch(() => null)
+    : null;
 
   if (!resp.ok) {
-    throw new Error(`API ${method} ${path} → ${resp.status}`);
+    const detail = body?.detail;
+    throw new ApiError(typeof detail === "string" ? detail : `Ошибка ${resp.status}`, resp.status);
   }
-  return resp.json() as Promise<T>;
+  return body as T;
 }

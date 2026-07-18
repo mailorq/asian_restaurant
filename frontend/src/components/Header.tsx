@@ -4,6 +4,8 @@ import { SearchBox } from "./SearchBox";
 import { ThemeToggle } from "./ThemeToggle";
 import { useUI, type View } from "../stores/ui";
 import { useCart } from "../stores/cart";
+import { useAuth } from "../stores/auth";
+import { formatUaPhone } from "../lib/phone";
 
 const NAV: { label: string; view: View }[] = [
   { label: "Главная", view: { name: "home" } },
@@ -15,6 +17,8 @@ export function Header() {
   const navigate = useUI((s) => s.navigate);
   const openModal = useUI((s) => s.openModal);
   const count = useCart((s) => s.lines.reduce((n, l) => n + l.quantity, 0));
+  const user = useAuth((s) => s.user);
+  const logout = useAuth((s) => s.logout);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -70,12 +74,26 @@ export function Header() {
               </span>
             )}
           </button>
-          <button
-            onClick={() => openModal("auth", "login")}
-            className="ml-1 hidden rounded-full border border-border px-4 py-2 text-sm font-medium transition-colors hover:border-accent hover:text-accent sm:block"
-          >
-            Войти
-          </button>
+          {user ? (
+            <div className="ml-1 hidden items-center gap-2 sm:flex">
+              <span className="max-w-[150px] truncate text-sm text-muted">
+                {formatUaPhone(user.phone ?? "")}
+              </span>
+              <button
+                onClick={logout}
+                className="rounded-full border border-border px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger"
+              >
+                Выйти
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => openModal("auth", "login")}
+              className="ml-1 hidden rounded-full border border-border px-4 py-2 text-sm font-medium transition-colors hover:border-accent hover:text-accent sm:block"
+            >
+              Войти
+            </button>
+          )}
           <button
             onClick={() => setMobileOpen((v) => !v)}
             aria-label="Меню"
@@ -104,15 +122,27 @@ export function Header() {
                 {item.label}
               </button>
             ))}
-            <button
-              onClick={() => {
-                openModal("auth", "login");
-                setMobileOpen(false);
-              }}
-              className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-accent hover:bg-surface-2"
-            >
-              Войти в аккаунт
-            </button>
+            {user ? (
+              <button
+                onClick={() => {
+                  logout();
+                  setMobileOpen(false);
+                }}
+                className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-danger hover:bg-surface-2"
+              >
+                Выйти ({formatUaPhone(user.phone ?? "")})
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  openModal("auth", "login");
+                  setMobileOpen(false);
+                }}
+                className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-accent hover:bg-surface-2"
+              >
+                Войти в аккаунт
+              </button>
+            )}
           </div>
         </div>
       )}
