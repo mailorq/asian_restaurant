@@ -31,14 +31,19 @@ def register(request, data: RegisterIn):
     phone = _to_e164(data.phone)
     if phone is None:
         raise HttpError(400, "Некорректный номер телефона")
+    name = data.name.strip()
+    if not name:
+        raise HttpError(400, "Укажите имя")
     try:
-        validate_password(data.password, User(username=phone, phone=phone))
+        validate_password(data.password, User(username=phone, phone=phone, first_name=name))
     except ValidationError as exc:
         raise HttpError(400, " ".join(exc.messages))
     if User.objects.filter(phone=phone).exists():
         raise HttpError(400, "Этот номер уже зарегистрирован")
     try:
-        user = User.objects.create_user(username=phone, phone=phone, password=data.password)
+        user = User.objects.create_user(
+            username=phone, phone=phone, password=data.password, first_name=name
+        )
     except IntegrityError:
         raise HttpError(400, "Этот номер уже зарегистрирован")
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")

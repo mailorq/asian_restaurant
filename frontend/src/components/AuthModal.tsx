@@ -52,12 +52,15 @@ export function AuthModal() {
       setPhoneError("Введите номер в формате +380 (XX) XXX XX XX");
       return;
     }
-    const password = String(new FormData(e.currentTarget).get("password") ?? "");
+    const form = new FormData(e.currentTarget);
+    const password = String(form.get("password") ?? "");
+    const name = String(form.get("name") ?? "").trim();
     setLoading(true);
     try {
+      const body = isLogin ? { phone, password } : { phone, password, name };
       const user = await api<CurrentUser>(isLogin ? "/auth/login" : "/auth/register", {
         method: "POST",
-        body: JSON.stringify({ phone, password }),
+        body: JSON.stringify(body),
       });
       setUser(user);
       notify(isLogin ? "Вход выполнен" : "Добро пожаловать!");
@@ -90,6 +93,19 @@ export function AuthModal() {
 
       <div key={tab} className="anim-fade-up">
         <form onSubmit={submit} className="flex flex-col gap-4">
+          {!isLogin && (
+            <Field label="Имя" required>
+              <input
+                name="name"
+                className={inputCls}
+                placeholder="Иван"
+                autoComplete="name"
+                required
+                maxLength={150}
+              />
+            </Field>
+          )}
+
           <Field label="Телефон" required>
             <input
               type="tel"

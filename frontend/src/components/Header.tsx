@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Icon } from "./Icon";
 import { SearchBox } from "./SearchBox";
 import { ThemeToggle } from "./ThemeToggle";
+import { UserMenu } from "./UserMenu";
 import { useUI, type View } from "../stores/ui";
 import { useCart } from "../stores/cart";
 import { useAuth } from "../stores/auth";
@@ -75,17 +76,7 @@ export function Header() {
             )}
           </button>
           {user ? (
-            <div className="ml-1 hidden items-center gap-2 sm:flex">
-              <span className="max-w-[150px] truncate text-sm text-muted">
-                {formatUaPhone(user.phone ?? "")}
-              </span>
-              <button
-                onClick={logout}
-                className="rounded-full border border-border px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-danger hover:text-danger"
-              >
-                Выйти
-              </button>
-            </div>
+            <UserMenu />
           ) : (
             <button
               onClick={() => openModal("auth", "login")}
@@ -130,7 +121,7 @@ export function Header() {
                 }}
                 className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-danger hover:bg-surface-2"
               >
-                Выйти ({formatUaPhone(user.phone ?? "")})
+                Выйти ({user.name || formatUaPhone(user.phone ?? "")})
               </button>
             ) : (
               <button

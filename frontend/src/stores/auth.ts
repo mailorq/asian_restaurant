@@ -5,6 +5,7 @@ import { api } from "../api/client";
 export interface CurrentUser {
   id: number;
   phone: string | null;
+  name: string;
 }
 
 interface AuthState {
