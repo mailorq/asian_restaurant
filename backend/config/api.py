@@ -2,6 +2,7 @@ from ninja import NinjaAPI, Schema
 
 from accounts.api import router as auth_router
 from cart.api import router as cart_router
+from menu.api import router as menu_router
 
 # swagger ui served at /api/docs, openapi schema at /api/openapi.json (fastapi-style)
 api = NinjaAPI(
@@ -22,4 +23,5 @@ def health(request) -> dict:
 
 
 api.add_router("/auth", auth_router)
+api.add_router("/menu", menu_router)
 api.add_router("/cart", cart_router)

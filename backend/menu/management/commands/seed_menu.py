@@ -9,6 +9,7 @@ from menu.models import Ingredient, Product
 
 SEED_DIR = Path(settings.BASE_DIR) / "seed"
 SOURCE_IMAGES = SEED_DIR / "images" / "optimized"
+DEFAULT_STOCK = 50
 
 
 def _load_products() -> list[dict]:
@@ -19,8 +20,19 @@ def _load_products() -> list[dict]:
     return module.PRODUCTS_DATA
 
 
+def _split_allergens(description: str) -> tuple[str, str]:
+    marker = "Аллергены:"
+    if marker not in description:
+        return description.strip(), ""
+    desc, allergens = description.split(marker, 1)
+    allergens = allergens.strip()
+    if allergens.lower().startswith("отсутств"):
+        allergens = ""
+    return desc.strip(), allergens
+
+
 class Command(BaseCommand):
-    help = "Seed products and ingredients from backend/seed/products_data.py (idempotent)."
+    help = "Seed products/ingredients from backend/seed/products_data.py (idempotent, keyed by code)."
 
     def handle(self, *args, **options) -> None:
         media_products = Path(settings.MEDIA_ROOT) / "products"
@@ -28,21 +40,25 @@ class Command(BaseCommand):
         created = updated = 0
 
         for row in _load_products():
-            # provision the image into MEDIA_ROOT so /media/<image> resolves
             basename = Path(row["image"]).name
+            code = Path(basename).stem  # dish_1, drink_4, dessert_2
             source = SOURCE_IMAGES / basename
             if source.exists():
                 shutil.copy2(source, media_products / basename)
 
+            description, allergens = _split_allergens(row["description"])
             product, is_new = Product.objects.update_or_create(
-                name=row["name"],
+                code=code,
                 defaults={
                     "category": row["category"],
-                    "description": row["description"],
+                    "name": row["name"],
+                    "description": description,
+                    "allergens": allergens,
                     "price": row["price"],
                     "image": row["image"],
                     "is_active": row["is_active"],
                     "is_featured": row["is_featured"],
+                    "stock_quantity": row.get("stock", DEFAULT_STOCK),
                 },
             )
             product.ingredients.set(
