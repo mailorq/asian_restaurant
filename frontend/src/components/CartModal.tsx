@@ -1,41 +1,33 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { ProductThumb } from "./ProductThumb";
-import { useCart } from "../stores/cart";
 import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
-import { getProduct, formatPrice } from "../lib/mockMenu";
+import { useCartQuery, useClearCart, useRemoveItem, useSetItem } from "../api/cart";
+import { formatPrice } from "../lib/menu";
 
 type Step = "cart" | "checkout";
 
 export function CartModal() {
-  const lines = useCart((s) => s.lines);
-  const setQuantity = useCart((s) => s.setQuantity);
-  const remove = useCart((s) => s.remove);
-  const clear = useCart((s) => s.clear);
+  const { data: cart, isLoading } = useCartQuery();
+  const setItem = useSetItem();
+  const removeItem = useRemoveItem();
+  const clearCart = useClearCart();
   const close = useUI((s) => s.closeModal);
   const notify = useToast((s) => s.notify);
   const [step, setStep] = useState<Step>("cart");
   const [payment, setPayment] = useState<"cash" | "card">("cash");
 
-  const items = useMemo(
-    () =>
-      lines
-        .map((l) => ({ product: getProduct(l.productId), quantity: l.quantity }))
-        .filter((i): i is { product: NonNullable<ReturnType<typeof getProduct>>; quantity: number } =>
-          Boolean(i.product),
-        ),
-    [lines],
-  );
-
-  const total = items.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+  const items = cart?.items ?? [];
+  const total = cart?.total ?? 0;
   const empty = items.length === 0;
+  const busy = setItem.isPending || removeItem.isPending;
 
   function placeOrder(e: React.FormEvent) {
     e.preventDefault();
     notify("Заказ оформлен — ждите звонка");
-    clear();
+    clearCart.mutate();
     close();
   }
 
@@ -51,7 +43,7 @@ export function CartModal() {
       title={title}
       onClose={close}
       footer={
-        empty ? undefined : step === "cart" ? (
+        empty || isLoading ? undefined : step === "cart" ? (
           <div>
             <div className="mb-3 flex items-center justify-between">
               <span className="text-muted">Итого</span>
@@ -72,7 +64,19 @@ export function CartModal() {
         )
       }
     >
-      {empty ? (
+      {isLoading ? (
+        <ul className="flex flex-col gap-3">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="flex items-center gap-3">
+              <div className="h-16 w-16 shrink-0 animate-pulse rounded-xl bg-surface-2" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 w-2/3 animate-pulse rounded bg-surface-2" />
+                <div className="h-3 w-1/4 animate-pulse rounded bg-surface-2" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : empty ? (
         <div className="flex flex-col items-center py-10 text-center">
           <span className="mb-4 grid h-16 w-16 place-items-center rounded-full bg-surface-2 text-muted">
             <Icon name="cart" size={30} />
@@ -81,47 +85,73 @@ export function CartModal() {
           <p className="mt-1 text-sm text-muted">Добавьте что-нибудь из меню — мы всё приготовим.</p>
         </div>
       ) : step === "cart" ? (
-        <ul className="flex flex-col gap-3">
-          {items.map(({ product, quantity }) => (
-            <li key={product.id} className="flex items-center gap-3">
-              <ProductThumb
-                category={product.category}
-                name={product.name}
-                image={product.image}
-                className="h-16 w-16 shrink-0 rounded-xl"
-                iconSize={26}
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">{product.name}</p>
-                <p className="tnum text-sm text-muted">{formatPrice(product.price)}</p>
-              </div>
-              <div className="flex items-center gap-1 rounded-full border border-border p-1">
-                <button
-                  onClick={() => setQuantity(product.id, quantity - 1)}
-                  aria-label="Меньше"
-                  className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-text"
+        <>
+          {cart && (cart.removed_items.length > 0 || cart.adjustments.length > 0) && (
+            <div className="mb-3 space-y-1.5">
+              {cart.removed_items.map((r) => (
+                <p
+                  key={`r${r.product_id}`}
+                  className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger"
                 >
-                  <Icon name="minus" size={15} strokeWidth={2} />
-                </button>
-                <span className="tnum w-6 text-center text-sm font-semibold">{quantity}</span>
-                <button
-                  onClick={() => setQuantity(product.id, quantity + 1)}
-                  aria-label="Больше"
-                  className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-text"
+                  «{r.name}» {r.reason === "out_of_stock" ? "закончился" : "недоступен"} — удалён из
+                  корзины
+                </p>
+              ))}
+              {cart.adjustments.map((a) => (
+                <p
+                  key={`a${a.product_id}`}
+                  className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
                 >
-                  <Icon name="plus" size={15} strokeWidth={2} />
+                  Количество «{a.name}» уменьшено до {a.to_qty} шт. из-за остатка
+                </p>
+              ))}
+            </div>
+          )}
+          <ul className="flex flex-col gap-3">
+            {items.map((line) => (
+              <li key={line.product_id} className="flex items-center gap-3">
+                <ProductThumb
+                  category={line.category}
+                  name={line.name}
+                  image={line.image}
+                  className="h-16 w-16 shrink-0 rounded-xl"
+                  iconSize={26}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{line.name}</p>
+                  <p className="tnum text-sm text-muted">{formatPrice(line.price)}</p>
+                </div>
+                <div className="flex items-center gap-1 rounded-full border border-border p-1">
+                  <button
+                    onClick={() => setItem.mutate({ productId: line.product_id, quantity: line.quantity - 1 })}
+                    disabled={busy}
+                    aria-label="Меньше"
+                    className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+                  >
+                    <Icon name="minus" size={15} strokeWidth={2} />
+                  </button>
+                  <span className="tnum w-6 text-center text-sm font-semibold">{line.quantity}</span>
+                  <button
+                    onClick={() => setItem.mutate({ productId: line.product_id, quantity: line.quantity + 1 })}
+                    disabled={busy}
+                    aria-label="Больше"
+                    className="grid h-7 w-7 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+                  >
+                    <Icon name="plus" size={15} strokeWidth={2} />
+                  </button>
+                </div>
+                <button
+                  onClick={() => removeItem.mutate({ productId: line.product_id })}
+                  disabled={busy}
+                  aria-label={`Убрать ${line.name}`}
+                  className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                >
+                  <Icon name="trash" size={18} />
                 </button>
-              </div>
-              <button
-                onClick={() => remove(product.id)}
-                aria-label={`Убрать ${product.name}`}
-                className="grid h-8 w-8 place-items-center rounded-full text-muted transition-colors hover:bg-danger/10 hover:text-danger"
-              >
-                <Icon name="trash" size={18} />
-              </button>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        </>
       ) : (
         <form id="checkout-form" onSubmit={placeOrder} className="flex flex-col gap-4">
           <label className="block">

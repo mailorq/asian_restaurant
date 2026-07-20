@@ -4,7 +4,7 @@ import { SearchBox } from "./SearchBox";
 import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { useUI, type View } from "../stores/ui";
-import { useCart } from "../stores/cart";
+import { useCartQuery } from "../api/cart";
 import { useAuth } from "../stores/auth";
 import { formatUaPhone } from "../lib/phone";
 
@@ -17,7 +17,7 @@ export function Header() {
   const view = useUI((s) => s.view);
   const navigate = useUI((s) => s.navigate);
   const openModal = useUI((s) => s.openModal);
-  const count = useCart((s) => s.lines.reduce((n, l) => n + l.quantity, 0));
+  const count = useCartQuery().data?.count ?? 0;
   const user = useAuth((s) => s.user);
   const logout = useAuth((s) => s.logout);
   const [mobileOpen, setMobileOpen] = useState(false);

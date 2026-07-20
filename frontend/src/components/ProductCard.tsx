@@ -1,12 +1,12 @@
 import { ProductThumb } from "./ProductThumb";
 import { Icon } from "./Icon";
-import { useCart } from "../stores/cart";
+import { useAddItem } from "../api/cart";
 import { useToast } from "../stores/toast";
 import { useUI } from "../stores/ui";
-import { CATEGORY_LABEL_ONE, formatPrice, type Product } from "../lib/mockMenu";
+import { CATEGORY_LABEL_ONE, formatPrice, type Product } from "../lib/menu";
 
 export function ProductCard({ product, index = 0 }: { product: Product; index?: number }) {
-  const add = useCart((s) => s.add);
+  const addItem = useAddItem();
   const notify = useToast((s) => s.notify);
   const navigate = useUI((s) => s.navigate);
 
@@ -16,8 +16,11 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
 
   function addToCart(e: React.MouseEvent) {
     e.stopPropagation();
-    add(product.id);
-    notify(`${product.name} — добавлено в корзину`);
+    if (!product.available || addItem.isPending) return;
+    addItem.mutate(
+      { productId: product.id },
+      { onSuccess: () => notify(`${product.name} — добавлено в корзину`) },
+    );
   }
 
   return (
@@ -31,11 +34,18 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
           category={product.category}
           name={product.name}
           image={product.image}
-          className="aspect-[4/3] transition-transform duration-500 group-hover:scale-[1.04]"
+          className={`aspect-[4/3] transition-transform duration-500 group-hover:scale-[1.04] ${
+            product.available ? "" : "opacity-60"
+          }`}
         />
         <span className="absolute left-3 top-3 rounded-full bg-surface/85 px-3 py-1 text-xs font-medium text-muted backdrop-blur-sm">
           {CATEGORY_LABEL_ONE[product.category]}
         </span>
+        {!product.available && (
+          <span className="absolute right-3 top-3 rounded-full bg-danger/90 px-3 py-1 text-xs font-medium text-white">
+            Нет в наличии
+          </span>
+        )}
       </div>
 
       <div className="flex flex-1 flex-col p-5">
@@ -44,14 +54,21 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
 
         <div className="mt-4 flex items-center justify-between pt-1">
           <span className="tnum text-lg font-semibold">{formatPrice(product.price)}</span>
-          <button
-            onClick={addToCart}
-            aria-label={`Добавить «${product.name}» в корзину`}
-            className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          >
-            <Icon name="plus" size={16} strokeWidth={2} />
-            В корзину
-          </button>
+          {product.available ? (
+            <button
+              onClick={addToCart}
+              disabled={addItem.isPending}
+              aria-label={`Добавить «${product.name}» в корзину`}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60"
+            >
+              <Icon name="plus" size={16} strokeWidth={2} />
+              В корзину
+            </button>
+          ) : (
+            <span className="rounded-full bg-surface-2 px-3.5 py-2 text-sm font-medium text-muted">
+              Нет в наличии
+            </span>
+          )}
         </div>
       </div>
     </article>

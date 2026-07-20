@@ -1,6 +1,12 @@
 import { create } from "zustand";
 
 import { api } from "../api/client";
+import { queryClient } from "../lib/queryClient";
+
+// identity changes may trigger a guest->user cart merge server-side; refetch it
+function refreshCart() {
+  queryClient.invalidateQueries({ queryKey: ["cart"] });
+}
 
 export interface CurrentUser {
   id: number;
@@ -19,7 +25,10 @@ interface AuthState {
 export const useAuth = create<AuthState>((set) => ({
   user: null,
   ready: false,
-  setUser: (user) => set({ user }),
+  setUser: (user) => {
+    set({ user });
+    refreshCart();
+  },
   refresh: async () => {
     try {
       const user = await api<CurrentUser>("/auth/me");
@@ -36,5 +45,6 @@ export const useAuth = create<AuthState>((set) => ({
       /* clear locally regardless */
     }
     set({ user: null });
+    refreshCart();
   },
 }));

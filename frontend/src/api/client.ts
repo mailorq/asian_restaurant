@@ -3,9 +3,11 @@
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  body: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -36,7 +38,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!resp.ok) {
     const detail = body?.detail;
-    throw new ApiError(typeof detail === "string" ? detail : `Ошибка ${resp.status}`, resp.status);
+    throw new ApiError(typeof detail === "string" ? detail : `Ошибка ${resp.status}`, resp.status, body);
   }
   return body as T;
 }
