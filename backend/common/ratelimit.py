@@ -2,14 +2,18 @@ import functools
 import inspect
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.core.cache import cache
 from ninja.errors import HttpError
 
 
 def _client_ip(request) -> str:
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # X-Forwarded-For is client-controlled and spoofable unless a trusted reverse
+    # proxy sanitizes it, so only honour it when the operator opts in.
+    if getattr(settings, "RATELIMIT_TRUST_XFF", False):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "unknown")
 
 
