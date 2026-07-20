@@ -1,0 +1,32 @@
+# Runtime dependencies — pinned. Source of truth is pyproject.toml; this file is
+# the reproducible lock for pip-based images and CI. Regenerate after upgrades.
+
+# Web framework / API
+Django==5.2.16
+django-ninja==1.6.2
+
+# Database
+psycopg[binary]==3.3.4
+
+# Configuration
+django-environ==0.14.0
+
+# Cache and server-side cart store
+redis==8.0.1
+
+# Order-event messaging
+pika==1.4.1
+
+# Application servers
+gunicorn==26.0.0
+uvicorn[standard]>=0.30,<0.40  # ASGI runner; required for async streaming (SSE)
+
+# Static files
+whitenoise==6.12.0
+
+# Observability
+django-prometheus==2.5.0
+
+# Domain helpers
+phonenumbers==9.0.34
+Pillow==12.3.0
