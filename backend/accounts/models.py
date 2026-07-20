@@ -1,5 +1,9 @@
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+
+# staff who may access the /employee area
+EMPLOYEE_GROUP = "restaurant_employee"
 
 
 class User(AbstractUser):
@@ -8,3 +12,24 @@ class User(AbstractUser):
 
     def __str__(self) -> str:
         return self.username
+
+
+class EmployeeRoleAudit(models.Model):
+    class Action(models.TextChoices):
+        GRANT = "grant", "Выдана"
+        REVOKE = "revoke", "Отозвана"
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+"
+    )
+    target = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="role_audits"
+    )
+    action = models.CharField(max_length=8, choices=Action.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.action} → {self.target_id}"

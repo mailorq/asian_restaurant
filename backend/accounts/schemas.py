@@ -1,5 +1,7 @@
 from ninja import Field, Schema
 
+from employee.permissions import is_employee
+
 
 class RegisterIn(Schema):
     phone: str
@@ -16,10 +18,15 @@ class UserOut(Schema):
     id: int
     phone: str | None = None
     name: str = ""
+    is_employee: bool = False
 
     @staticmethod
     def resolve_name(obj) -> str:
         return obj.first_name
+
+    @staticmethod
+    def resolve_is_employee(obj) -> bool:
+        return is_employee(obj)
 
 
 class MessageOut(Schema):
