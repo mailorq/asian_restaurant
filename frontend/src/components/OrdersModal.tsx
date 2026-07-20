@@ -1,7 +1,7 @@
 import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { useUI } from "../stores/ui";
-import { formatPrice } from "../lib/mockMenu";
+import { formatPrice } from "../lib/menu";
 
 type Status = "pending" | "delivered" | "cancelled";
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ProductCard } from "../components/ProductCard";
-import { PRODUCTS, CATEGORY_LABELS, type Category } from "../lib/mockMenu";
+import { useProducts } from "../api/menu";
+import { CATEGORY_LABELS, type Category } from "../lib/menu";
 
 type Filter = "all" | Category;
 
@@ -13,7 +14,8 @@ const FILTERS: { value: Filter; label: string }[] = [
 
 export function MenuPage() {
   const [filter, setFilter] = useState<Filter>("all");
-  const products = filter === "all" ? PRODUCTS : PRODUCTS.filter((p) => p.category === filter);
+  const { data, isLoading, isError, refetch } = useProducts();
+  const products = (data ?? []).filter((p) => filter === "all" || p.category === filter);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
@@ -40,11 +42,28 @@ export function MenuPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {products.map((product, i) => (
-          <ProductCard key={product.id} product={product} index={i} />
-        ))}
-      </div>
+      {isLoading ? (
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-80 animate-pulse rounded-2xl border border-border bg-surface-2" />
+          ))}
+        </div>
+      ) : isError ? (
+        <div className="py-16 text-center">
+          <p className="text-muted">Не удалось загрузить меню.</p>
+          <button onClick={() => refetch()} className="mt-3 font-medium text-accent hover:underline">
+            Попробовать снова
+          </button>
+        </div>
+      ) : products.length === 0 ? (
+        <p className="py-16 text-center text-muted">В этой категории пока пусто.</p>
+      ) : (
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {products.map((product, i) => (
+            <ProductCard key={product.id} product={product} index={i} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

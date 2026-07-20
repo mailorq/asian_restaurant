@@ -2,19 +2,21 @@ import { useMemo, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { ProductThumb } from "./ProductThumb";
 import { useUI } from "../stores/ui";
-import { PRODUCTS, CATEGORY_LABEL_ONE, formatPrice } from "../lib/mockMenu";
+import { useProducts } from "../api/menu";
+import { CATEGORY_LABEL_ONE, formatPrice } from "../lib/menu";
 
 export function SearchBox() {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const navigate = useUI((s) => s.navigate);
   const boxRef = useRef<HTMLDivElement>(null);
+  const { data: products } = useProducts();
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    return PRODUCTS.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 5);
-  }, [query]);
+    return (products ?? []).filter((p) => p.name.toLowerCase().includes(q)).slice(0, 5);
+  }, [query, products]);
 
   function pick(id: number) {
     setQuery("");

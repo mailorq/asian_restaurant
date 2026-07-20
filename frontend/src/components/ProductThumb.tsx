@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon, CATEGORY_ICON } from "./Icon";
-import type { Category } from "../lib/mockMenu";
+import type { Category } from "../lib/menu";
 
 // shows the product photo; falls back to the category icon if it's missing or fails to load
 export function ProductThumb({
@@ -12,7 +12,7 @@ export function ProductThumb({
 }: {
   category: Category;
   name: string;
-  image?: string;
+  image?: string | null;
   className?: string;
   iconSize?: number;
 }) {
@@ -25,7 +25,7 @@ export function ProductThumb({
     >
       {showImage ? (
         <img
-          src={image}
+          src={image ?? undefined}
           alt={name}
           loading="lazy"
           decoding="async"

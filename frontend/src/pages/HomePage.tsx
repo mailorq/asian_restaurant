@@ -1,7 +1,8 @@
 import { ProductCard } from "../components/ProductCard";
 import { Icon, CATEGORY_ICON } from "../components/Icon";
 import { useUI } from "../stores/ui";
-import { featured, CATEGORY_LABELS, byCategory, type Category } from "../lib/mockMenu";
+import { useProducts } from "../api/menu";
+import { CATEGORY_LABELS, type Category } from "../lib/menu";
 import { plural } from "../lib/format";
 
 const PERKS = [
@@ -14,6 +15,9 @@ const CATEGORIES: Category[] = ["dish", "drink", "dessert"];
 
 export function HomePage() {
   const navigate = useUI((s) => s.navigate);
+  const { data } = useProducts();
+  const products = data ?? [];
+  const featured = products.filter((p) => p.is_featured);
 
   return (
     <div>
@@ -85,7 +89,7 @@ export function HomePage() {
           </button>
         </div>
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {featured().map((product, i) => (
+          {featured.map((product, i) => (
             <ProductCard key={product.id} product={product} index={i} />
           ))}
         </div>
@@ -94,7 +98,7 @@ export function HomePage() {
       <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
         <div className="grid gap-4 sm:grid-cols-3">
           {CATEGORIES.map((cat) => {
-            const count = byCategory(cat).length;
+            const count = products.filter((p) => p.category === cat).length;
             return (
               <button
                 key={cat}

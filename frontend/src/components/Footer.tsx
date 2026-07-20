@@ -1,6 +1,6 @@
 import { Icon } from "./Icon";
 import { strings } from "../lib/i18n";
-import { CATEGORY_LABELS } from "../lib/mockMenu";
+import { CATEGORY_LABELS } from "../lib/menu";
 
 export function Footer() {
   const f = strings.footer;
