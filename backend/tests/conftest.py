@@ -1,0 +1,133 @@
+import pytest
+import redis as redis_sync
+from django.contrib.auth import get_user_model
+
+from cart import service
+from menu.models import Product
+
+
+@pytest.fixture(autouse=True)
+def cart_redis(settings):
+    # isolate cart data on a throwaway redis db and force the async client to
+    # rebind to it (the module singleton is otherwise cached per event loop)
+    from django.core.cache import cache
+
+    # derive db 15 from whatever redis is configured (compose host or CI localhost)
+    test_url = f"{settings.CART_REDIS_URL.rsplit('/', 1)[0]}/15"
+    settings.CART_REDIS_URL = test_url
+    settings.GEOCODER_ENABLED = False  # never hit the external provider in tests
+    # isolate the rate-limit cache per test so buckets don't leak between tests
+    settings.CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "tests"}
+    }
+    cache.clear()
+    service._clients.clear()
+    service._sync_client = None
+    conn = redis_sync.from_url(test_url)
+    conn.flushdb()
+    yield
+    try:
+        conn.flushdb()
+    finally:
+        conn.close()
+    service._clients.clear()
+    service._sync_client = None
+
+
+@pytest.fixture
+def api(client):
+    # the sync test client may run each async request in a fresh event loop, so
+    # drop the cached redis client before every call to rebind it to that loop
+    class _Api:
+        def _reset(self):
+            service._clients.clear()
+
+        def get(self, *a, **k):
+            self._reset()
+            return client.get(*a, **k)
+
+        def post(self, *a, **k):
+            self._reset()
+            return client.post(*a, **k)
+
+        def put(self, *a, **k):
+            self._reset()
+            return client.put(*a, **k)
+
+        def delete(self, *a, **k):
+            self._reset()
+            return client.delete(*a, **k)
+
+        def force_login(self, user):
+            client.force_login(user)
+
+        @property
+        def cookies(self):
+            return client.cookies
+
+    return _Api()
+
+
+@pytest.fixture
+def make_product(db):
+    counter = {"n": 0}
+
+    def _make(name="Товар", price="100.00", stock=50, is_active=True, category="dish"):
+        counter["n"] += 1
+        n = counter["n"]
+        return Product.objects.create(
+            code=f"test_{n}",
+            category=category,
+            name=name,
+            description="desc",
+            price=price,
+            stock_quantity=stock,
+            is_active=is_active,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def user(db):
+    return get_user_model().objects.create_user(
+        username="+79990000001",
+        password="Pass!2345",
+        first_name="Иван",
+        phone="+79990000001",
+    )
+
+
+@pytest.fixture
+def employee_user(db):
+    from django.contrib.auth.models import Group
+
+    from accounts.models import EMPLOYEE_GROUP
+
+    user = get_user_model().objects.create_user(
+        username="+79990000010", password="Pass!2345", first_name="Сотрудник"
+    )
+    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    user.groups.add(group)
+    return user
+
+
+@pytest.fixture
+def superuser(db):
+    return get_user_model().objects.create_superuser(
+        username="+79990000011", password="Pass!2345"
+    )
+
+
+@pytest.fixture
+def seed_cart():
+    from cart import service
+
+    def _seed(user_id: int, items: dict[int, int], version: int = 1):
+        key = service.user_key(user_id)
+        mapping = {str(pid): qty for pid, qty in items.items()}
+        mapping[service.VERSION_FIELD] = version
+        service._sync_redis().hset(key, mapping=mapping)
+        return key
+
+    return _seed
