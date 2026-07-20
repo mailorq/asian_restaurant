@@ -18,7 +18,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--save", "", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -93,3 +95,4 @@ volumes:
   media:
   promdata:
   rabbitmqdata:
+  redis_data:
