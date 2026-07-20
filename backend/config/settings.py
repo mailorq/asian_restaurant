@@ -88,6 +88,12 @@ CART_REDIS_URL = env("CART_REDIS_URL", default="redis://redis:6379/0")
 # strips and re-sets it; otherwise fall back to REMOTE_ADDR
 RATELIMIT_TRUST_XFF = env.bool("RATELIMIT_TRUST_XFF", default=False)
 
+# server-side delivery address verification (Nominatim by default)
+GEOCODER_ENABLED = env.bool("GEOCODER_ENABLED", default=True)
+GEOCODER_URL = env("GEOCODER_URL", default="https://nominatim.openstreetmap.org/search")
+GEOCODER_USER_AGENT = env("GEOCODER_USER_AGENT", default="AsianRestaurant/1.0 (+delivery verification)")
+GEOCODER_TIMEOUT = env.int("GEOCODER_TIMEOUT", default=5)
+
 RABBITMQ_URL = env("RABBITMQ_URL", default="amqp://guest:guest@rabbitmq:5672/")
 
 AUTH_USER_MODEL = "accounts.User"

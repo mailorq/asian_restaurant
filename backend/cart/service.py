@@ -1,12 +1,12 @@
 import asyncio
 
+import redis as redis_sync
 import redis.asyncio as aioredis
 from django.conf import settings
 from ninja.errors import HttpError
 from redis.exceptions import RedisError
 
 from menu.models import Product
-
 
 CART_TTL = 60 * 60 * 24 * 14  # 14 days; refreshed on every mutation
 MAX_QTY = 50
@@ -154,8 +154,8 @@ def guest_key(cart_id: str) -> str:
 async def read(key: str) -> tuple[dict[int, int], int]:
     try:
         raw = await _redis().hgetall(key)
-    except RedisError:
-        raise HttpError(503, "Корзина временно недоступна. Повторите позже.")
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
     version = int(raw.pop(VERSION_FIELD, 0) or 0)
     items = {int(k): int(v) for k, v in raw.items()}
     return items, version
@@ -172,8 +172,8 @@ async def _apply(key: str, expected: int | None, op: str, product_id: int = 0, q
     ]
     try:
         status, version = await _redis().eval(_CAS_LUA, 1, key, *argv)
-    except RedisError:
-        raise HttpError(503, "Корзина временно недоступна. Повторите позже.")
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
     if int(status) == -1:
         raise CartConflict(int(version))
     return int(version)
@@ -198,15 +198,15 @@ async def clear(key: str, expected: int | None) -> int:
 async def delete(key: str) -> None:
     try:
         await _redis().delete(key)
-    except RedisError:
-        raise HttpError(503, "Корзина временно недоступна. Повторите позже.")
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
 
 
 async def merge_guest_into_user(src_key: str, dst_key: str) -> None:
     try:
         await _redis().eval(_MERGE_LUA, 2, dst_key, src_key, CART_TTL, MAX_QTY)
-    except RedisError:
-        raise HttpError(503, "Корзина временно недоступна. Повторите позже.")
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
 
 
 async def _reconcile(key: str, remove_ids: list[int], set_map: dict[int, int]) -> int:
@@ -216,8 +216,8 @@ async def _reconcile(key: str, remove_ids: list[int], set_map: dict[int, int]) -
         argv += [product_id, quantity]
     try:
         version = await _redis().eval(_RECONCILE_LUA, 1, key, *argv)
-    except RedisError:
-        raise HttpError(503, "Корзина временно недоступна. Повторите позже.")
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
     return int(version)
 
 
@@ -287,3 +287,31 @@ async def snapshot(key: str) -> dict:
     # frozen, server-priced view for checkout; reuses the same stock reconciliation
     items, version = await read(key)
     return await render(key, items, version)
+
+
+# Sync accessors for transactional callers (checkout runs inside a sync DB
+# transaction with select_for_update, so it cannot await the async client).
+_sync_client: redis_sync.Redis | None = None
+
+
+def _sync_redis() -> redis_sync.Redis:
+    global _sync_client
+    if _sync_client is None:
+        _sync_client = redis_sync.from_url(settings.CART_REDIS_URL, decode_responses=True)
+    return _sync_client
+
+
+def read_sync(key: str) -> tuple[dict[int, int], int]:
+    try:
+        raw = _sync_redis().hgetall(key)
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
+    version = int(raw.pop(VERSION_FIELD, 0) or 0)
+    return {int(k): int(v) for k, v in raw.items()}, version
+
+
+def clear_sync(key: str) -> None:
+    try:
+        _sync_redis().delete(key)
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc

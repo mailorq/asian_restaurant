@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -30,3 +31,163 @@ class OrderOutbox(models.Model):
 
     def __str__(self) -> str:
         return f"{self.event_type}:{self.aggregate_id} ({self.status})"
+
+
+class DeliveryAddress(models.Model):
+    """A user's delivery address, verified server-side via the geocoder."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="addresses"
+    )
+    address = models.CharField(max_length=500)
+    lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    is_verified = models.BooleanField(default=False)
+    provider = models.CharField(max_length=32, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return self.address
+
+
+class GeocodeCache(models.Model):
+    """Cache of geocoder lookups, keyed by a hash of the normalized query, so
+    repeated address checks never re-hit the external provider."""
+
+    query_hash = models.CharField(max_length=64, unique=True)
+    query = models.CharField(max_length=500)
+    found = models.BooleanField(default=False)
+    lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    display_name = models.CharField(max_length=500, blank=True)
+    provider = models.CharField(max_length=32, default="nominatim")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return self.query
+
+
+# statuses that count as an open/active order (used for per-customer counters)
+ACTIVE_ORDER_STATUSES = ["created", "confirmed", "preparing", "delivering"]
+
+
+# Order status state machine: allowed forward transitions. Terminal states map
+# to an empty set. Enforced in the service layer, not by the DB.
+ORDER_TRANSITIONS: dict[str, set[str]] = {
+    "created": {"confirmed", "cancelled"},
+    "confirmed": {"preparing", "cancelled"},
+    "preparing": {"delivering", "cancelled"},
+    "delivering": {"delivered", "cancelled"},
+    "delivered": set(),
+    "cancelled": set(),
+}
+
+
+class Order(models.Model):
+    class Status(models.TextChoices):
+        CREATED = "created", "Создан"
+        CONFIRMED = "confirmed", "Подтверждён"
+        PREPARING = "preparing", "Готовится"
+        DELIVERING = "delivering", "В доставке"
+        DELIVERED = "delivered", "Доставлен"
+        CANCELLED = "cancelled", "Отменён"
+
+    class Payment(models.TextChoices):
+        CASH = "cash", "Наличными"
+        CARD = "card", "Картой"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="orders"
+    )
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.CREATED, db_index=True
+    )
+    payment_method = models.CharField(max_length=8, choices=Payment.choices, default=Payment.CASH)
+
+    # contact snapshot — taken from request.user, never from the checkout form
+    phone = models.CharField(max_length=16)
+    contact_name = models.CharField(max_length=150, blank=True)
+    delivery_address = models.ForeignKey(
+        DeliveryAddress, on_delete=models.PROTECT, related_name="orders"
+    )
+
+    total = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # idempotency: client key + the (cart, version) the order was built from
+    idempotency_key = models.CharField(max_length=64, unique=True)
+    source_cart_id = models.CharField(max_length=64)
+    source_cart_version = models.PositiveIntegerField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_cart_id", "source_cart_version"],
+                name="uniq_order_source_cart_version",
+            ),
+        ]
+        indexes = [models.Index(fields=["user", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"Order #{self.pk} ({self.status})"
+
+    def can_transition_to(self, new_status: str) -> bool:
+        return new_status in ORDER_TRANSITIONS.get(self.status, set())
+
+
+class OrderItem(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    product = models.ForeignKey("menu.Product", on_delete=models.PROTECT, related_name="+")
+    # snapshot of name/price at checkout so history is stable
+    product_name = models.CharField(max_length=255)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.PositiveIntegerField()
+    line_total = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="orderitem_qty_gt_0"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.product_name} × {self.quantity}"
+
+
+class OrderStatusHistory(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="history")
+    from_status = models.CharField(max_length=16, blank=True)
+    to_status = models.CharField(max_length=16)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    note = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.order_id}: {self.from_status or '∅'} → {self.to_status}"
+
+
+class ProcessedEvent(models.Model):
+    """Inbox dedup: records an (event, consumer) pair the operations runtime has
+    already handled, so redelivered messages are idempotent."""
+
+    event_id = models.CharField(max_length=64)
+    consumer = models.CharField(max_length=64, default="ops")
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["event_id", "consumer"], name="uniq_processed_event"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.consumer}:{self.event_id}"
