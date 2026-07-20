@@ -82,6 +82,12 @@ CACHES = {
     }
 }
 
+CART_REDIS_URL = env("CART_REDIS_URL", default="redis://redis:6379/0")
+
+# only trust X-Forwarded-For for client-ip rate limiting behind a proxy that
+# strips and re-sets it; otherwise fall back to REMOTE_ADDR
+RATELIMIT_TRUST_XFF = env.bool("RATELIMIT_TRUST_XFF", default=False)
+
 RABBITMQ_URL = env("RABBITMQ_URL", default="amqp://guest:guest@rabbitmq:5672/")
 
 AUTH_USER_MODEL = "accounts.User"

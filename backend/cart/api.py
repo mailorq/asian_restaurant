@@ -1,87 +1,140 @@
-from ninja import Router
+import uuid
+
+from django.conf import settings
+from django.http import HttpResponse
+from django.middleware.csrf import CsrfViewMiddleware
+from ninja import Router, Status
 from ninja.errors import HttpError
-from ninja.security import django_auth
 
 from cart import service
-from cart.schemas import AddItemIn, CartOut, SetQtyIn
+from cart.schemas import AddItemIn, CartConflictOut, CartOut, SetQtyIn
 from common.ratelimit import rate_limit
 from menu.models import Product
 
 
-router = Router(tags=["cart"], auth=django_auth)
+router = Router(tags=["cart"])
 
 WRITE_LIMIT = dict(scope="cart_write", limit=60, window=60)
 
+COOKIE_NAME = "cartid"
+COOKIE_SALT = "cart"
+COOKIE_PATH = "/api/cart"
 
-async def _render(r, user_id: int) -> dict:
-    items = await service.get_items(r, user_id)
-    if not items:
-        return {"items": [], "total": 0.0, "count": 0}
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
-    products = {p.id: p async for p in Product.objects.filter(id__in=list(items))}
-    stale = [pid for pid in items if pid not in products]
-    if stale:
-        await service.remove(r, user_id, *stale)
+# The cart router carries no Ninja auth (guests are allowed), so Ninja marks its
+# operations csrf-exempt. We still enforce CSRF by hand for authenticated writes.
+_csrf = CsrfViewMiddleware(lambda request: HttpResponse())
 
-    lines, total, count = [], 0.0, 0
-    for product_id, qty in items.items():
-        product = products.get(product_id)
-        if product is None:
-            continue
-        price = float(product.price)
-        if product.is_active:
-            total += price * qty
-            count += qty
-        lines.append(
-            {
-                "product_id": product_id,
-                "name": product.name,
-                "price": price,
-                "quantity": qty,
-                "image": product.image.url if product.image else None,
-                "available": product.is_active,
-            }
+
+def _enforce_csrf(request) -> None:
+    reason = _csrf.process_view(request, None, (), {})
+    if reason is not None:
+        raise HttpError(403, "CSRF-проверка не пройдена")
+
+
+def _read_cookie(request) -> str | None:
+    try:
+        return request.get_signed_cookie(
+            COOKIE_NAME, default=None, salt=COOKIE_SALT, max_age=service.CART_TTL
         )
-    return {"items": lines, "total": total, "count": count}
+    except Exception:
+        return None
+
+
+def _set_cookie(response: HttpResponse, cart_id: str) -> None:
+    response.set_signed_cookie(
+        COOKIE_NAME,
+        cart_id,
+        salt=COOKIE_SALT,
+        max_age=service.CART_TTL,
+        httponly=True,
+        samesite="Lax",
+        secure=not settings.DEBUG,
+        path=COOKIE_PATH,
+    )
+
+
+async def _resolve(request, response: HttpResponse) -> str:
+    """Return the Redis cart key for this request, managing the guest cookie.
+
+    Authenticated requests use a per-user key and absorb any lingering guest
+    cart (merge, then drop the cookie). Guests get a signed, opaque cookie id.
+    """
+    user = await request.auser()
+    if user.is_authenticated:
+        if request.method not in SAFE_METHODS:
+            _enforce_csrf(request)
+        key = service.user_key(user.id)
+        guest_id = _read_cookie(request)
+        if guest_id:
+            await service.merge_guest_into_user(service.guest_key(guest_id), key)
+            response.delete_cookie(COOKIE_NAME, path=COOKIE_PATH)
+        return key
+
+    guest_id = _read_cookie(request) or uuid.uuid4().hex
+    _set_cookie(response, guest_id)
+    return service.guest_key(guest_id)
+
+
+async def _current(key: str) -> dict:
+    items, version = await service.read(key)
+    return await service.render(key, items, version)
+
+
+async def _conflict(key: str) -> dict:
+    return {"code": "cart_version_conflict", "cart": await _current(key)}
 
 
 @router.get("", response=CartOut)
-async def get_cart(request):
-    async with service.redis() as r:
-        return await _render(r, request.auth.id)
+async def get_cart(request, response: HttpResponse):
+    key = await _resolve(request, response)
+    return await _current(key)
 
 
-@router.post("/items", response=CartOut)
+@router.post("/items", response={200: CartOut, 409: CartConflictOut})
 @rate_limit(**WRITE_LIMIT)
-async def add_item(request, data: AddItemIn):
+async def add_item(request, data: AddItemIn, response: HttpResponse):
     if not await Product.objects.filter(id=data.product_id, is_active=True).aexists():
         raise HttpError(404, "Товар недоступен")
-    async with service.redis() as r:
-        await service.add(r, request.auth.id, data.product_id, data.quantity)
-        return await _render(r, request.auth.id)
+    key = await _resolve(request, response)
+    try:
+        await service.add(key, data.product_id, data.quantity, data.expected_version)
+    except service.CartConflict:
+        return Status(409, await _conflict(key))
+    return Status(200, await _current(key))
 
 
-@router.put("/items/{product_id}", response=CartOut)
+@router.put("/items/{product_id}", response={200: CartOut, 409: CartConflictOut})
 @rate_limit(**WRITE_LIMIT)
-async def set_item(request, product_id: int, data: SetQtyIn):
+async def set_item(request, product_id: int, data: SetQtyIn, response: HttpResponse):
     if data.quantity > 0 and not await Product.objects.filter(id=product_id, is_active=True).aexists():
         raise HttpError(404, "Товар недоступен")
-    async with service.redis() as r:
-        await service.set_qty(r, request.auth.id, product_id, data.quantity)
-        return await _render(r, request.auth.id)
+    key = await _resolve(request, response)
+    try:
+        await service.set_qty(key, product_id, data.quantity, data.expected_version)
+    except service.CartConflict:
+        return Status(409, await _conflict(key))
+    return Status(200, await _current(key))
 
 
-@router.delete("/items/{product_id}", response=CartOut)
+@router.delete("/items/{product_id}", response={200: CartOut, 409: CartConflictOut})
 @rate_limit(**WRITE_LIMIT)
-async def remove_item(request, product_id: int):
-    async with service.redis() as r:
-        await service.remove(r, request.auth.id, product_id)
-        return await _render(r, request.auth.id)
+async def remove_item(request, product_id: int, response: HttpResponse, expected_version: int | None = None):
+    key = await _resolve(request, response)
+    try:
+        await service.remove(key, product_id, expected_version)
+    except service.CartConflict:
+        return Status(409, await _conflict(key))
+    return Status(200, await _current(key))
 
 
-@router.delete("", response=CartOut)
+@router.delete("", response={200: CartOut, 409: CartConflictOut})
 @rate_limit(**WRITE_LIMIT)
-async def clear_cart(request):
-    async with service.redis() as r:
-        await service.clear(r, request.auth.id)
-        return await _render(r, request.auth.id)
+async def clear_cart(request, response: HttpResponse, expected_version: int | None = None):
+    key = await _resolve(request, response)
+    try:
+        await service.clear(key, expected_version)
+    except service.CartConflict:
+        return Status(409, await _conflict(key))
+    return Status(200, await _current(key))
