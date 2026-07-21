@@ -126,7 +126,7 @@ def test_login_merges_guest_cart_and_clears_cookie(api, make_product, user):
     assert data["items"][0]["product_id"] == product.id
 
 
-
+def test_redis_down_returns_503(api, monkeypatch):
     class _Dead:
         async def hgetall(self, *a, **k):
             raise RedisError("down")
@@ -149,6 +149,7 @@ def test_login_merges_guest_cart_and_clears_cookie(api, make_product, user):
     assert resp.status_code == 503
 
 
+def test_merge_sums_quantities_and_render_caps_to_stock(make_product):
     product = make_product(stock=5)
     user_key = service.user_key(1)
     guest_key = service.guest_key("g-merge")

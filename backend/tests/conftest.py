@@ -6,16 +6,24 @@ from cart import service
 from menu.models import Product
 
 
-TEST_CART_REDIS_URL = "redis://redis:6379/15"
-
-
 @pytest.fixture(autouse=True)
 def cart_redis(settings):
     # isolate cart data on a throwaway redis db and force the async client to
     # rebind to it (the module singleton is otherwise cached per event loop)
-    settings.CART_REDIS_URL = TEST_CART_REDIS_URL
+    from django.core.cache import cache
+
+    # derive db 15 from whatever redis is configured (compose host or CI localhost)
+    test_url = f"{settings.CART_REDIS_URL.rsplit('/', 1)[0]}/15"
+    settings.CART_REDIS_URL = test_url
+    settings.GEOCODER_ENABLED = False  # never hit the external provider in tests
+    # isolate the rate-limit cache per test so buckets don't leak between tests
+    settings.CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "tests"}
+    }
+    cache.clear()
     service._clients.clear()
-    conn = redis_sync.from_url(TEST_CART_REDIS_URL)
+    service._sync_client = None
+    conn = redis_sync.from_url(test_url)
     conn.flushdb()
     yield
     try:
@@ -23,6 +31,7 @@ def cart_redis(settings):
     finally:
         conn.close()
     service._clients.clear()
+    service._sync_client = None
 
 
 @pytest.fixture
@@ -85,4 +94,38 @@ def user(db):
         username="+79990000001",
         password="Pass!2345",
         first_name="Иван",
+        phone="+79990000001",
     )
+
+
+@pytest.fixture
+def employee_user(db):
+    from django.contrib.auth.models import Group
+
+    from accounts.models import EMPLOYEE_GROUP
+
+    account = get_user_model().objects.create_user(
+        username="+79990000010", password="Pass!2345", first_name="Сотрудник"
+    )
+    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    account.groups.add(group)
+    return account
+
+
+@pytest.fixture
+def superuser(db):
+    return get_user_model().objects.create_superuser(
+        username="+79990000011", password="Pass!2345"
+    )
+
+
+@pytest.fixture
+def seed_cart():
+    def _seed(user_id: int, items: dict[int, int], version: int = 1):
+        key = service.user_key(user_id)
+        mapping = {str(pid): qty for pid, qty in items.items()}
+        mapping[service.VERSION_FIELD] = version
+        service._sync_redis().hset(key, mapping=mapping)
+        return key
+
+    return _seed
