@@ -19,6 +19,7 @@ class UserOut(Schema):
     phone: str | None = None
     name: str = ""
     is_employee: bool = False
+    is_superuser: bool = False
 
     @staticmethod
     def resolve_name(obj) -> str:

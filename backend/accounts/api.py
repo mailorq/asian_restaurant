@@ -37,15 +37,15 @@ def register(request, data: RegisterIn):
     try:
         validate_password(data.password, User(username=phone, phone=phone, first_name=name))
     except ValidationError as exc:
-        raise HttpError(400, " ".join(exc.messages))
+        raise HttpError(400, " ".join(exc.messages)) from exc
     if User.objects.filter(phone=phone).exists():
         raise HttpError(400, "Этот номер уже зарегистрирован")
     try:
         user = User.objects.create_user(
             username=phone, phone=phone, password=data.password, first_name=name
         )
-    except IntegrityError:
-        raise HttpError(400, "Этот номер уже зарегистрирован")
+    except IntegrityError as exc:
+        raise HttpError(400, "Этот номер уже зарегистрирован") from exc
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
     return user
 

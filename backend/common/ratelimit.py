@@ -41,8 +41,8 @@ def rate_limit(scope: str, limit: int, window: int):
                 bucket = f"rl:{scope}:{_client_ip(request)}"
                 try:
                     hits = await sync_to_async(_hit)(bucket, window)
-                except Exception:
-                    raise HttpError(503, "Сервис временно недоступен. Повторите позже.")
+                except Exception as exc:
+                    raise HttpError(503, "Сервис временно недоступен. Повторите позже.") from exc
                 _guard(hits, limit)
                 return await view(request, *args, **kwargs)
 
@@ -53,8 +53,8 @@ def rate_limit(scope: str, limit: int, window: int):
             bucket = f"rl:{scope}:{_client_ip(request)}"
             try:
                 hits = _hit(bucket, window)
-            except Exception:
-                raise HttpError(503, "Сервис временно недоступен. Повторите позже.")
+            except Exception as exc:
+                raise HttpError(503, "Сервис временно недоступен. Повторите позже.") from exc
             _guard(hits, limit)
             return view(request, *args, **kwargs)
 

@@ -11,7 +11,6 @@ from cart.schemas import AddItemIn, CartConflictOut, CartOut, SetQtyIn
 from common.ratelimit import rate_limit
 from menu.models import Product
 
-
 router = Router(tags=["cart"])
 
 WRITE_LIMIT = dict(scope="cart_write", limit=60, window=60)

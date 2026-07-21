@@ -12,6 +12,8 @@ export interface CurrentUser {
   id: number;
   phone: string | null;
   name: string;
+  is_employee: boolean;
+  is_superuser: boolean;
 }
 
 interface AuthState {
