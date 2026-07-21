@@ -56,8 +56,16 @@ export function Header() {
 
         <div className="ml-auto flex items-center gap-1 lg:ml-2">
           <ThemeToggle />
+          {user?.is_employee && (
+            <button
+              onClick={() => navigate({ name: "employee" })}
+              className="hidden items-center gap-1.5 rounded-full border border-border px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-accent hover:text-accent sm:flex"
+            >
+              <Icon name="bowl" size={16} /> Панель
+            </button>
+          )}
           <button
-            onClick={() => openModal("orders")}
+            onClick={() => navigate({ name: "orders" })}
             aria-label="Мои заказы"
             className="hidden h-10 w-10 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-text sm:grid"
           >

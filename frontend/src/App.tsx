@@ -2,12 +2,13 @@ import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
 import { AuthModal } from "./components/AuthModal";
 import { CartModal } from "./components/CartModal";
-import { OrdersModal } from "./components/OrdersModal";
 import { ToastHost } from "./components/ToastHost";
 import { useEffect } from "react";
 import { HomePage } from "./pages/HomePage";
 import { MenuPage } from "./pages/MenuPage";
 import { ProductPage } from "./pages/ProductPage";
+import { OrdersPage } from "./pages/OrdersPage";
+import { EmployeePage } from "./pages/EmployeePage";
 import { useUI } from "./stores/ui";
 import { useAuth } from "./stores/auth";
 
@@ -21,6 +22,17 @@ export default function App() {
     useAuth.getState().refresh();
   }, []);
 
+  // the employee area uses its own layout (no storefront header/footer)
+  if (view.name === "employee") {
+    return (
+      <>
+        <EmployeePage />
+        {modal === "auth" && <AuthModal />}
+        <ToastHost />
+      </>
+    );
+  }
+
   return (
     <div className="flex min-h-dvh flex-col">
       <Header />
@@ -28,12 +40,12 @@ export default function App() {
         {view.name === "home" && <HomePage />}
         {view.name === "menu" && <MenuPage />}
         {view.name === "product" && <ProductPage id={view.id} />}
+        {view.name === "orders" && <OrdersPage />}
       </main>
       <Footer />
 
       {modal === "auth" && <AuthModal />}
       {modal === "cart" && <CartModal />}
-      {modal === "orders" && <OrdersModal />}
       <ToastHost />
     </div>
   );

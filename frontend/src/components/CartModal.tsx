@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { ProductThumb } from "./ProductThumb";
 import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
-import { useCartQuery, useClearCart, useRemoveItem, useSetItem } from "../api/cart";
+import { useCartQuery, useRemoveItem, useSetItem } from "../api/cart";
+import { useCheckout, useLastAddress, useVerifyAddress } from "../api/orders";
+import { ApiError } from "../api/client";
+import { useAuth } from "../stores/auth";
 import { formatPrice } from "../lib/menu";
+import { formatUaPhone } from "../lib/phone";
 
 type Step = "cart" | "checkout";
 
@@ -13,22 +17,74 @@ export function CartModal() {
   const { data: cart, isLoading } = useCartQuery();
   const setItem = useSetItem();
   const removeItem = useRemoveItem();
-  const clearCart = useClearCart();
+  const checkout = useCheckout();
   const close = useUI((s) => s.closeModal);
+  const openModal = useUI((s) => s.openModal);
+  const navigate = useUI((s) => s.navigate);
   const notify = useToast((s) => s.notify);
+  const user = useAuth((s) => s.user);
+  const { data: lastAddress } = useLastAddress(Boolean(user));
+  const verify = useVerifyAddress();
   const [step, setStep] = useState<Step>("cart");
   const [payment, setPayment] = useState<"cash" | "card">("cash");
+  const [address, setAddress] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [addressTouched, setAddressTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(false);
 
   const items = cart?.items ?? [];
   const total = cart?.total ?? 0;
   const empty = items.length === 0;
   const busy = setItem.isPending || removeItem.isPending;
 
+  // prefill recipient from the profile until the user edits it (does not touch the profile)
+  useEffect(() => {
+    if (user && !nameTouched) setRecipientName(user.name ?? "");
+  }, [user, nameTouched]);
+
+  // prefill address from the last used one until the user edits it
+  useEffect(() => {
+    if (lastAddress?.address && !addressTouched) setAddress(lastAddress.address);
+  }, [lastAddress, addressTouched]);
+
+  function checkAddress() {
+    const value = address.trim();
+    if (value.length < 3 || verify.isPending) return;
+    verify.mutate(value, {
+      onSuccess: (r) =>
+        notify(
+          r.verified ? `Адрес найден: ${r.display_name}` : "Адрес не распознан — уточните",
+          r.verified ? "success" : "error",
+        ),
+      onError: () => notify("Проверка адреса временно недоступна", "error"),
+    });
+  }
+
   function placeOrder(e: React.FormEvent) {
     e.preventDefault();
-    notify("Заказ оформлен — ждите звонка");
-    clearCart.mutate();
-    close();
+    if (!user || checkout.isPending) return;
+    checkout.mutate(
+      { address: address.trim(), payment_method: payment, recipient_name: recipientName.trim() },
+      {
+        onSuccess: (order) => {
+          notify(`Заказ №${order.id} оформлен`);
+          close();
+          navigate({ name: "orders" });
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 409) {
+            const body = err.body as { message?: string } | null;
+            notify(body?.message ?? "Корзина изменилась — проверьте состав", "error");
+            setStep("cart");
+          } else if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+            notify("Войдите, чтобы оформить заказ", "error");
+            openModal("auth", "login");
+          } else {
+            notify(err instanceof Error ? err.message : "Не удалось оформить заказ", "error");
+          }
+        },
+      },
+    );
   }
 
   const title =
@@ -152,32 +208,75 @@ export function CartModal() {
             ))}
           </ul>
         </>
+      ) : !user ? (
+        <div className="flex flex-col items-center py-8 text-center">
+          <span className="mb-4 grid h-14 w-14 place-items-center rounded-full bg-surface-2 text-muted">
+            <Icon name="user" size={26} />
+          </span>
+          <p className="font-medium">Войдите, чтобы оформить заказ</p>
+          <p className="mt-1 text-sm text-muted">Имя и телефон мы возьмём из вашего аккаунта.</p>
+          <button
+            onClick={() => openModal("auth", "login")}
+            className="mt-4 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-contrast transition-colors hover:bg-primary-hover"
+          >
+            Войти
+          </button>
+        </div>
       ) : (
         <form id="checkout-form" onSubmit={placeOrder} className="flex flex-col gap-4">
+          <div className="flex items-center gap-1.5 rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-muted">
+            <Icon name="phone" size={14} />
+            {user.phone ? formatUaPhone(user.phone) : "Телефон не указан"}
+          </div>
+
           <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-muted">Имя<span className="text-accent"> *</span></span>
+            <span className="mb-1.5 block text-sm font-medium text-muted">Имя получателя<span className="text-accent"> *</span></span>
             <input
               required
+              value={recipientName}
+              onChange={(e) => {
+                setNameTouched(true);
+                setRecipientName(e.target.value);
+              }}
               placeholder="Иван"
               className="h-11 w-full rounded-xl border border-border bg-surface-2 px-3.5 focus:border-primary focus:outline-none"
             />
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-muted">Телефон<span className="text-accent"> *</span></span>
-            <input
-              required
-              type="tel"
-              placeholder="+7 900 000-00-00"
-              className="h-11 w-full rounded-xl border border-border bg-surface-2 px-3.5 focus:border-primary focus:outline-none"
-            />
-          </label>
+
           <label className="block">
             <span className="mb-1.5 block text-sm font-medium text-muted">Адрес доставки<span className="text-accent"> *</span></span>
-            <input
-              required
-              placeholder="ул. Пушкина, 12, кв. 3"
-              className="h-11 w-full rounded-xl border border-border bg-surface-2 px-3.5 focus:border-primary focus:outline-none"
-            />
+            <div className="flex gap-2">
+              <input
+                required
+                minLength={5}
+                value={address}
+                onChange={(e) => {
+                  setAddressTouched(true);
+                  setAddress(e.target.value);
+                  if (verify.data) verify.reset();
+                }}
+                placeholder="ул. Пушкина, 12, кв. 3"
+                className="h-11 w-full rounded-xl border border-border bg-surface-2 px-3.5 focus:border-primary focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={checkAddress}
+                disabled={verify.isPending || address.trim().length < 3}
+                className="shrink-0 rounded-xl border border-border px-3.5 text-sm font-medium text-muted transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+              >
+                {verify.isPending ? "…" : "Проверить"}
+              </button>
+            </div>
+            {verify.data && (
+              <p
+                className={`mt-1.5 flex items-start gap-1.5 text-xs ${
+                  verify.data.verified ? "text-emerald-600 dark:text-emerald-400" : "text-danger"
+                }`}
+              >
+                <Icon name={verify.data.verified ? "check" : "pin"} size={13} className="mt-0.5 shrink-0" />
+                {verify.data.verified ? verify.data.display_name : "Адрес не распознан — доставим по указанному тексту"}
+              </p>
+            )}
           </label>
 
           <fieldset>
@@ -211,9 +310,10 @@ export function CartModal() {
 
           <button
             type="submit"
-            className="mt-1 h-12 rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.99]"
+            disabled={checkout.isPending}
+            className="mt-1 h-12 rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.99] disabled:opacity-60"
           >
-            Подтвердить заказ
+            {checkout.isPending ? "Оформляем…" : "Подтвердить заказ"}
           </button>
         </form>
       )}

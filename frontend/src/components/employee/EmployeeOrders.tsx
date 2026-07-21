@@ -1,0 +1,129 @@
+import { useState } from "react";
+import { Icon } from "../Icon";
+import { useToast } from "../../stores/toast";
+import { ORDER_STATUS, formatOrderDate, type OrderStatus } from "../../api/orders";
+import { useEmployeeOrders, useTransitionOrder } from "../../api/employee";
+import { formatPrice } from "../../lib/menu";
+
+const NEXT_ACTIONS: Record<OrderStatus, OrderStatus[]> = {
+  created: ["confirmed", "cancelled"],
+  confirmed: ["preparing", "cancelled"],
+  preparing: ["delivering", "cancelled"],
+  delivering: ["delivered", "cancelled"],
+  delivered: [],
+  cancelled: [],
+};
+
+const FILTERS: { value: OrderStatus | ""; label: string }[] = [
+  { value: "", label: "Все" },
+  { value: "created", label: "Созданы" },
+  { value: "confirmed", label: "Подтверждены" },
+  { value: "preparing", label: "Готовятся" },
+  { value: "delivering", label: "В доставке" },
+  { value: "delivered", label: "Доставлены" },
+  { value: "cancelled", label: "Отменены" },
+];
+
+export function EmployeeOrders() {
+  const [filter, setFilter] = useState<OrderStatus | "">("");
+  const { data: orders, isLoading, isError, refetch } = useEmployeeOrders(filter);
+  const transition = useTransitionOrder();
+  const notify = useToast((s) => s.notify);
+
+  function act(orderId: number, to: OrderStatus) {
+    transition.mutate(
+      { orderId, to_status: to },
+      {
+        onSuccess: () => notify(`Заказ №${orderId}: ${ORDER_STATUS[to].label.toLowerCase()}`),
+        onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error"),
+      },
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-5 flex flex-wrap gap-2">
+        {FILTERS.map((f) => (
+          <button
+            key={f.value || "all"}
+            onClick={() => setFilter(f.value)}
+            className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
+              filter === f.value
+                ? "bg-primary text-primary-contrast"
+                : "border border-border text-muted hover:text-text"
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <ul className="flex flex-col gap-3">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="h-28 animate-pulse rounded-2xl bg-surface-2" />
+          ))}
+        </ul>
+      ) : isError ? (
+        <div className="rounded-2xl border border-border py-12 text-center">
+          <p className="text-sm text-muted">Не удалось загрузить заказы.</p>
+          <button onClick={() => refetch()} className="mt-3 font-medium text-accent hover:underline">
+            Повторить
+          </button>
+        </div>
+      ) : !orders || orders.length === 0 ? (
+        <p className="rounded-2xl border border-border py-12 text-center text-sm text-muted">
+          Заказов нет
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {orders.map((order) => {
+            const status = ORDER_STATUS[order.status];
+            return (
+              <li key={order.id} className="rounded-2xl border border-border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold">Заказ №{order.id}</span>
+                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${status.cls}`}>
+                    {status.label}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted">
+                  <span className="flex items-center gap-1">
+                    <Icon name="clock" size={12} /> {formatOrderDate(order.created_at)}
+                  </span>
+                  <span>{order.contact_name}</span>
+                  <span className="tnum">{order.phone}</span>
+                  <span className="flex items-center gap-1">
+                    <Icon name="pin" size={12} /> {order.address}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-muted">
+                  {order.items.map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name)).join(", ")}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                  <div className="flex flex-wrap gap-2">
+                    {NEXT_ACTIONS[order.status].map((to) => (
+                      <button
+                        key={to}
+                        onClick={() => act(order.id, to)}
+                        disabled={transition.isPending}
+                        className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+                          to === "cancelled"
+                            ? "border border-danger/40 text-danger hover:bg-danger/10"
+                            : "bg-primary text-primary-contrast hover:bg-primary-hover"
+                        }`}
+                      >
+                        {to === "cancelled" ? "Отменить" : ORDER_STATUS[to].label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="tnum font-semibold">{formatPrice(order.total)}</span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}

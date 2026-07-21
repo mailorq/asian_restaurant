@@ -1,0 +1,124 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { api } from "./client";
+import type { Cart } from "./cart";
+
+export type OrderStatus =
+  | "created"
+  | "confirmed"
+  | "preparing"
+  | "delivering"
+  | "delivered"
+  | "cancelled";
+
+export interface OrderItem {
+  product_id: number;
+  name: string;
+  unit_price: number;
+  quantity: number;
+  line_total: number;
+}
+
+export interface Order {
+  id: number;
+  status: OrderStatus;
+  payment_method: "cash" | "card";
+  total: number;
+  phone: string;
+  contact_name: string;
+  address: string;
+  address_verified: boolean;
+  items: OrderItem[];
+  created_at: string;
+}
+
+export const ORDER_STATUS: Record<OrderStatus, { label: string; cls: string }> = {
+  created: { label: "Создан", cls: "bg-accent/15 text-accent" },
+  confirmed: { label: "Подтверждён", cls: "bg-accent/15 text-accent" },
+  preparing: { label: "Готовится", cls: "bg-accent/15 text-accent" },
+  delivering: { label: "В доставке", cls: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
+  delivered: {
+    label: "Доставлен",
+    cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  },
+  cancelled: { label: "Отменён", cls: "bg-danger/15 text-danger" },
+};
+
+const dateFmt = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+export function formatOrderDate(iso: string): string {
+  return dateFmt.format(new Date(iso));
+}
+
+const EMPTY_CART: Cart = {
+  version: 0,
+  items: [],
+  total: 0,
+  count: 0,
+  adjustments: [],
+  removed_items: [],
+};
+
+export interface LastAddress {
+  address: string;
+  is_verified: boolean;
+}
+
+export interface AddressVerification {
+  verified: boolean;
+  display_name: string;
+  lat: number | null;
+  lng: number | null;
+}
+
+export function useOrders(enabled = true) {
+  return useQuery({
+    queryKey: ["orders"],
+    queryFn: () => api<Order[]>("/orders"),
+    enabled,
+  });
+}
+
+export function useLastAddress(enabled = true) {
+  return useQuery({
+    queryKey: ["last-address"],
+    queryFn: () => api<LastAddress>("/orders/address/last"),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useVerifyAddress() {
+  return useMutation({
+    mutationFn: (address: string) =>
+      api<AddressVerification>("/orders/address/verify", {
+        method: "POST",
+        body: JSON.stringify({ address }),
+      }),
+  });
+}
+
+export function useCheckout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      address: string;
+      payment_method: "cash" | "card";
+      recipient_name: string;
+    }) =>
+      api<Order>("/orders/checkout", {
+        method: "POST",
+        body: JSON.stringify({ ...vars, idempotency_key: crypto.randomUUID() }),
+      }),
+    onSuccess: () => {
+      qc.setQueryData(["cart"], EMPTY_CART); // checkout clears the cart server-side
+      qc.invalidateQueries({ queryKey: ["cart"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
+}
