@@ -130,7 +130,11 @@ def _create_order(
         order=order, from_status="", to_status=Order.Status.CREATED, changed_by=user, note="checkout"
     )
     OrderOutbox.objects.create(
-        aggregate_id=str(order.id), event_type="order.created", payload=_order_payload(order, items)
+        aggregate_id=str(order.id),
+        aggregate_version=1,
+        event_type="order.created",
+        routing_key="order.created",
+        payload=_order_payload(order, items),
     )
     return order
 
@@ -183,7 +187,9 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "") -
     )
     OrderOutbox.objects.create(
         aggregate_id=str(order.id),
+        aggregate_version=OrderStatusHistory.objects.filter(order=order).count(),
         event_type="order.status_changed",
+        routing_key="order.status_changed",
         payload={"order_id": order.id, "status": new_status, "from_status": previous},
     )
     return order

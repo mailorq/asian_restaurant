@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
 
@@ -15,8 +17,13 @@ class OrderOutbox(models.Model):
         PENDING = "pending", "В очереди"
         PUBLISHED = "published", "Отправлено"
 
+    event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     aggregate_id = models.CharField(max_length=64, db_index=True)
+    aggregate_version = models.PositiveIntegerField(default=1)
     event_type = models.CharField(max_length=64, default="order.created")
+    routing_key = models.CharField(max_length=64, default="order.created")
+    schema_version = models.PositiveSmallIntegerField(default=1)
+    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
     payload = models.JSONField()
     status = models.CharField(
         max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True
