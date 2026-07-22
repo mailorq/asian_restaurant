@@ -182,3 +182,16 @@ def test_transition_enforces_state_machine(user, make_product, seed_cart, client
 
     with pytest.raises(CheckoutError):
         order_service.transition(order, "delivered")  # confirmed -> delivered not allowed
+
+
+def test_checkout_writes_enriched_outbox(client, user, make_product, seed_cart):
+    product = make_product(stock=10)
+    seed_cart(user.id, {product.id: 1}, version=1)
+    client.force_login(user)
+    order_id = _checkout(client, key="idem-outbox-1").json()["id"]
+
+    row = OrderOutbox.objects.get(aggregate_id=str(order_id), event_type="order.created")
+    assert row.routing_key == "order.created"
+    assert row.aggregate_version == 1
+    assert row.schema_version == 1
+    assert row.event_id is not None

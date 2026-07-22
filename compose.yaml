@@ -64,6 +64,38 @@ services:
       - "8000"          # internal only; reached over the compose network
     restart: unless-stopped
 
+  # transactional outbox relay: publishes pending order events to RabbitMQ
+  relay:
+    build:
+      context: ./backend
+      target: prod
+    env_file: [.env]
+    command: python manage.py publish_outbox --loop
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  # ops runtime: consumes order events and builds the RestaurantOrder projection
+  ops:
+    build:
+      context: ./backend
+      target: prod
+    env_file: [.env]
+    command: python manage.py run_ops_consumer
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
