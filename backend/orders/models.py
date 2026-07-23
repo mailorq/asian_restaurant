@@ -123,8 +123,8 @@ class Order(models.Model):
 
     total = models.DecimalField(max_digits=10, decimal_places=2)
 
-    # idempotency: client key + the (cart, version) the order was built from
-    idempotency_key = models.CharField(max_length=64, unique=True)
+    # idempotency: client key (scoped to the owner) + the (cart, version) it was built from
+    idempotency_key = models.CharField(max_length=64)
     source_cart_id = models.CharField(max_length=64)
     source_cart_version = models.PositiveIntegerField()
 
@@ -137,6 +137,10 @@ class Order(models.Model):
             models.UniqueConstraint(
                 fields=["source_cart_id", "source_cart_version"],
                 name="uniq_order_source_cart_version",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "idempotency_key"],
+                name="uniq_order_user_idempotency",
             ),
         ]
         indexes = [models.Index(fields=["user", "-created_at"])]

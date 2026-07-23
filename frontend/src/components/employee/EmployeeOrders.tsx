@@ -30,9 +30,9 @@ export function EmployeeOrders() {
   const transition = useTransitionOrder();
   const notify = useToast((s) => s.notify);
 
-  function act(orderId: number, to: OrderStatus) {
+  function act(orderId: number, from: OrderStatus, to: OrderStatus) {
     transition.mutate(
-      { orderId, to_status: to },
+      { orderId, to_status: to, expected_status: from },
       {
         onSuccess: () => notify(`Заказ №${orderId}: ${ORDER_STATUS[to].label.toLowerCase()}`),
         onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error"),
@@ -96,6 +96,11 @@ export function EmployeeOrders() {
                   <span className="flex items-center gap-1">
                     <Icon name="pin" size={12} /> {order.address}
                   </span>
+                  {!order.address_verified && (
+                    <span className="font-medium text-amber-600 dark:text-amber-400">
+                      адрес не подтверждён — проверить
+                    </span>
+                  )}
                 </div>
                 <p className="mt-2 text-sm text-muted">
                   {order.items.map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name)).join(", ")}
@@ -105,7 +110,7 @@ export function EmployeeOrders() {
                     {NEXT_ACTIONS[order.status].map((to) => (
                       <button
                         key={to}
-                        onClick={() => act(order.id, to)}
+                        onClick={() => act(order.id, order.status, to)}
                         disabled={transition.isPending}
                         className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
                           to === "cancelled"

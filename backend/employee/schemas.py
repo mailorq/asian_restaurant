@@ -11,6 +11,7 @@ from orders.schemas import OrderOut
 class TransitionIn(Schema):
     to_status: str
     note: str = Field(default="", max_length=255)
+    expected_status: str | None = None  # optimistic guard against stale actions
 
 
 class InventoryItemOut(Schema):

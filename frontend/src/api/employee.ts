@@ -59,10 +59,19 @@ export function useEmployeeOrders(status: OrderStatus | "") {
 export function useTransitionOrder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { orderId: number; to_status: OrderStatus; note?: string }) =>
+    mutationFn: (vars: {
+      orderId: number;
+      to_status: OrderStatus;
+      expected_status: OrderStatus;
+      note?: string;
+    }) =>
       api<Order>(`/employee/orders/${vars.orderId}/transition`, {
         method: "POST",
-        body: JSON.stringify({ to_status: vars.to_status, note: vars.note ?? "" }),
+        body: JSON.stringify({
+          to_status: vars.to_status,
+          expected_status: vars.expected_status,
+          note: vars.note ?? "",
+        }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employee", "orders"] }),
   });

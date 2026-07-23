@@ -29,6 +29,9 @@ def _order_payload(order: Order, items: list[OrderItem]) -> dict:
         "status": order.status,
         "total": str(order.total),
         "phone": order.phone,
+        "recipient_name": order.contact_name,
+        "address": order.delivery_address.address,
+        "address_verified": order.delivery_address.is_verified,
         "payment_method": order.payment_method,
         "items": [
             {
@@ -142,7 +145,7 @@ def _create_order(
 def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, recipient_name: str = "") -> Order:
     source_cart_id = f"u:{user.id}"
 
-    existing = Order.objects.filter(idempotency_key=idempotency_key).first()
+    existing = Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
     if existing is not None:
         return existing
 
@@ -164,32 +167,38 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
     except IntegrityError:
         # a concurrent submit won the unique(idempotency_key) / (source_cart_id, version) race
         existing = (
-            Order.objects.filter(idempotency_key=idempotency_key).first()
+            Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
             or Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
         )
         if existing is not None:
             return existing
         raise
 
-    cart_service.clear_sync(key)  # only after the order is durably committed
+    # CAS clear: only wipe the cart if it is still at the version we checked out,
+    # so an item added mid-checkout is not silently lost.
+    cart_service.clear_sync(key, cart_version)
     return order
 
 
 @transaction.atomic
-def transition(order: Order, new_status: str, changed_by=None, note: str = "") -> Order:
-    if not order.can_transition_to(new_status):
-        raise CheckoutError("invalid_transition", f"Недопустимый переход {order.status} → {new_status}")
-    previous = order.status
-    order.status = new_status
-    order.save(update_fields=["status", "updated_at"])
+def transition(order: Order, new_status: str, changed_by=None, note: str = "", expected_status: str | None = None) -> Order:
+    locked = Order.objects.select_for_update().get(pk=order.pk)
+    if expected_status is not None and locked.status != expected_status:
+        raise CheckoutError("stale_order", f"Заказ уже в статусе «{locked.get_status_display()}»")
+    if not locked.can_transition_to(new_status):
+        raise CheckoutError("invalid_transition", f"Недопустимый переход {locked.status} → {new_status}")
+
+    previous = locked.status
+    locked.status = new_status
+    locked.save(update_fields=["status", "updated_at"])
     OrderStatusHistory.objects.create(
-        order=order, from_status=previous, to_status=new_status, changed_by=changed_by, note=note
+        order=locked, from_status=previous, to_status=new_status, changed_by=changed_by, note=note
     )
     OrderOutbox.objects.create(
-        aggregate_id=str(order.id),
-        aggregate_version=OrderStatusHistory.objects.filter(order=order).count(),
+        aggregate_id=str(locked.id),
+        aggregate_version=OrderStatusHistory.objects.filter(order=locked).count(),
         event_type="order.status_changed",
         routing_key="order.status_changed",
-        payload={"order_id": order.id, "status": new_status, "from_status": previous},
+        payload={"order_id": locked.id, "status": new_status, "from_status": previous},
     )
-    return order
+    return locked

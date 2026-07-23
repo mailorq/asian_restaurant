@@ -310,8 +310,19 @@ def read_sync(key: str) -> tuple[dict[int, int], int]:
     return {int(k): int(v) for k, v in raw.items()}, version
 
 
-def clear_sync(key: str) -> None:
+_CLEAR_CAS_LUA = """
+local cur = tonumber(redis.call('HGET', KEYS[1], 'v')) or 0
+if cur == tonumber(ARGV[1]) then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+"""
+
+
+def clear_sync(key: str, expected_version: int) -> bool:
     try:
-        _sync_redis().delete(key)
+        cleared = _sync_redis().eval(_CLEAR_CAS_LUA, 1, key, int(expected_version))
     except RedisError as exc:
         raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
+    return bool(cleared)

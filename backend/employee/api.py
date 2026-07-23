@@ -55,9 +55,11 @@ def transition_order(request, order_id: int, data: TransitionIn):
     if order is None:
         raise HttpError(404, "Заказ не найден")
     try:
-        order_service.transition(order, data.to_status, changed_by=request.auth, note=data.note)
+        order_service.transition(
+            order, data.to_status, changed_by=request.auth, note=data.note, expected_status=data.expected_status
+        )
     except order_service.CheckoutError as exc:
-        raise HttpError(400, exc.message) from exc
+        raise HttpError(409 if exc.code == "stale_order" else 400, exc.message) from exc
     return _orders_qs().get(pk=order.pk)
 
 

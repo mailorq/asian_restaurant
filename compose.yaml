@@ -40,8 +40,9 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    # management UI bound to localhost only — do not expose the broker publicly
     ports:
-      - "15672:15672"          # management ui
+      - "127.0.0.1:15672:15672"
     restart: unless-stopped
 
   backend:
