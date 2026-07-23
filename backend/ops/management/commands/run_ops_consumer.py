@@ -2,6 +2,7 @@ import json
 import logging
 
 from django.core.management.base import BaseCommand
+from django.db import DatabaseError
 
 from ops import service
 from orders import messaging
@@ -28,16 +29,42 @@ class Command(BaseCommand):
 
     def _on_message(self, channel, method, properties, body) -> None:
         headers = properties.headers or {}
+        retries = int(headers.get("x-retries", 0) or 0)
+
         try:
             payload = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            log.exception("ops poison message (bad json), dead-lettering")
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+
+        try:
             service.apply_event(
                 event_id=headers.get("event_id") or properties.message_id,
                 event_type=properties.type,
                 aggregate_version=int(headers.get("aggregate_version") or 0),
                 payload=payload,
             )
-            channel.basic_ack(method.delivery_tag)
-        except Exception:
-            # unrecoverable / poison message -> dead-letter to the DLQ (no requeue loop)
-            log.exception("ops consume failed, dead-lettering event %s", headers.get("event_id"))
+        except (KeyError, TypeError):
+            # unusable payload -> poison, straight to the DLQ
+            log.exception("ops poison message (bad payload) %s, dead-lettering", headers.get("event_id"))
             channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        except (service.OutOfOrder, DatabaseError):
+            # transient / out-of-order -> delayed retry, then DLQ once exhausted
+            if retries >= messaging.MAX_RETRIES:
+                log.warning("ops retries exhausted for %s, dead-lettering", headers.get("event_id"))
+                channel.basic_nack(method.delivery_tag, requeue=False)
+                return
+            messaging._publish(
+                channel,
+                messaging.RETRY_EXCHANGE,
+                method.routing_key,
+                properties.type,
+                payload,
+                {**headers, "x-retries": retries + 1},
+            )
+            channel.basic_ack(method.delivery_tag)
+            return
+
+        channel.basic_ack(method.delivery_tag)
