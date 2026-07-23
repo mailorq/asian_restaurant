@@ -46,7 +46,31 @@ def test_stale_status_change_is_ignored():
     assert RestaurantOrder.objects.get(source_order_id=8).status == "created"  # stale, not applied
 
 
-def test_status_change_without_projection_is_noop():
-    applied = ops_service.apply_event("evt-orphan", "order.status_changed", 1, {"order_id": 999, "status": "confirmed"})
-    assert applied is True  # event recorded for dedup, but no projection to update
+def test_status_change_without_projection_raises_out_of_order():
+    with pytest.raises(ops_service.OutOfOrder):
+        ops_service.apply_event("evt-orphan", "order.status_changed", 1, {"order_id": 999, "status": "confirmed"})
+    # the dedup insert is rolled back, so the event can be retried after created arrives
+    assert not ProcessedEvent.objects.filter(event_id="evt-orphan").exists()
     assert not RestaurantOrder.objects.filter(source_order_id=999).exists()
+
+
+def test_created_projection_includes_delivery_data():
+    ops_service.apply_event(
+        "evt-addr",
+        "order.created",
+        1,
+        {
+            "order_id": 10,
+            "status": "created",
+            "total": "100",
+            "phone": "+380671111111",
+            "recipient_name": "Пётр",
+            "address": "ул. Садовая, 5",
+            "address_verified": True,
+            "items": [],
+        },
+    )
+    projection = RestaurantOrder.objects.get(source_order_id=10)
+    assert projection.recipient_name == "Пётр"
+    assert projection.address == "ул. Садовая, 5"
+    assert projection.address_verified is True

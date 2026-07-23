@@ -149,6 +149,17 @@ def test_redis_down_returns_503(api, monkeypatch):
     assert resp.status_code == 503
 
 
+def test_clear_sync_is_version_scoped(make_product):
+    key = service.user_key(1)
+    service._sync_redis().hset(key, mapping={"5": 2, service.VERSION_FIELD: 3})
+
+    assert service.clear_sync(key, 2) is False  # stale version -> not cleared
+    assert service._sync_redis().exists(key) == 1
+
+    assert service.clear_sync(key, 3) is True  # matching version -> cleared
+    assert service._sync_redis().exists(key) == 0
+
+
 def test_merge_sums_quantities_and_render_caps_to_stock(make_product):
     product = make_product(stock=5)
     user_key = service.user_key(1)

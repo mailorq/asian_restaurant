@@ -176,9 +176,9 @@ def test_transition_enforces_state_machine(user, make_product, seed_cart, client
     client.force_login(user)
     order = Order.objects.get(pk=_checkout(client).json()["id"])
 
-    order_service.transition(order, "confirmed", changed_by=user)
-    assert order.status == "confirmed"
-    assert order.history.filter(to_status="confirmed").exists()
+    updated = order_service.transition(order, "confirmed", changed_by=user)
+    assert updated.status == "confirmed"  # transition returns the freshly-locked order
+    assert updated.history.filter(to_status="confirmed").exists()
 
     with pytest.raises(CheckoutError):
         order_service.transition(order, "delivered")  # confirmed -> delivered not allowed
@@ -195,3 +195,32 @@ def test_checkout_writes_enriched_outbox(client, user, make_product, seed_cart):
     assert row.aggregate_version == 1
     assert row.schema_version == 1
     assert row.event_id is not None
+
+
+def test_transition_rejects_stale_expected_status(client, user, make_product, seed_cart):
+    product = make_product(stock=10)
+    seed_cart(user.id, {product.id: 1}, version=1)
+    client.force_login(user)
+    order = Order.objects.get(pk=_checkout(client).json()["id"])
+
+    order_service.transition(order, "confirmed", changed_by=user, expected_status="created")
+    with pytest.raises(CheckoutError) as exc:
+        order_service.transition(order, "cancelled", changed_by=user, expected_status="created")
+    assert exc.value.code == "stale_order"
+
+
+def test_idempotency_key_scoped_per_user(client, make_product, seed_cart, django_user_model):
+    u1 = django_user_model.objects.create_user(username="+380670000001", password="x", phone="+380670000001")
+    u2 = django_user_model.objects.create_user(username="+380670000002", password="x", phone="+380670000002")
+    product = make_product(stock=10)
+
+    seed_cart(u1.id, {product.id: 1}, version=1)
+    client.force_login(u1)
+    order1 = _checkout(client, key="shared-idem-key").json()["id"]
+
+    seed_cart(u2.id, {product.id: 1}, version=1)
+    client.force_login(u2)
+    order2 = _checkout(client, key="shared-idem-key").json()["id"]
+
+    assert order1 != order2  # same key, different owners -> two distinct orders
+    assert Order.objects.filter(idempotency_key="shared-idem-key").count() == 2
