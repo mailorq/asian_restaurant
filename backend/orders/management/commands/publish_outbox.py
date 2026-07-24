@@ -1,53 +1,121 @@
+import os
+import random
+import socket
 import time
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand
+from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from orders import messaging
 from orders.models import OrderOutbox
 
+try:
+    from prometheus_client import Gauge, start_http_server
+except ImportError:  # pragma: no cover
+    Gauge = None
+    start_http_server = None
+
+BATCH = 50
+LEASE_SECONDS = 60
+BACKOFF_BASE_SECONDS = 2
+BACKOFF_MAX_SECONDS = 300
+
+
+def _backoff_seconds(attempts: int) -> float:
+    """Exponential backoff (capped) with additive jitter."""
+    base = min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * (2 ** min(attempts, 10)))
+    return base + random.uniform(0, base * 0.25)
+
+
+def _headers(row: OrderOutbox) -> dict:
+    return {
+        "event_id": str(row.event_id),
+        "correlation_id": str(row.correlation_id),
+        "schema_version": row.schema_version,
+        "aggregate_version": row.aggregate_version,
+    }
+
 
 class Command(BaseCommand):
-    help = "Relay pending order events from the outbox to RabbitMQ (with publisher confirms)."
+    help = "Leased at-least-once outbox relay: publishes pending order events to RabbitMQ."
 
     def add_arguments(self, parser) -> None:
-        parser.add_argument("--loop", action="store_true", help="poll continuously")
-        parser.add_argument("--interval", type=float, default=2.0)
+        parser.add_argument("--loop", action="store_true")
+        parser.add_argument("--interval", type=float, default=1.0)
+        parser.add_argument(
+            "--metrics-port", type=int, default=int(os.environ.get("OUTBOX_METRICS_PORT", "0"))
+        )
 
     def handle(self, *args, **options) -> None:
+        worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        gauge = None
+        if options["metrics_port"] and start_http_server is not None:
+            start_http_server(options["metrics_port"])
+            gauge = Gauge("outbox_oldest_pending_age_seconds", "age of the oldest pending outbox event")
+
         if options["loop"]:
-            self.stdout.write(self.style.SUCCESS("outbox relay loop started"))
+            self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
             while True:
-                self._drain()
+                self._drain(worker_id, gauge)
                 time.sleep(options["interval"])
         else:
-            self.stdout.write(self.style.SUCCESS(f"published {self._drain()} event(s)"))
+            self.stdout.write(self.style.SUCCESS(f"published {self._drain(worker_id, gauge)} event(s)"))
 
-    def _drain(self) -> int:
-        pending = OrderOutbox.objects.filter(status=OrderOutbox.Status.PENDING).order_by("created_at")
-        published = 0
-        for row in pending.iterator():
-            try:
-                messaging.publish(
-                    routing_key=row.routing_key,
-                    event_type=row.event_type,
-                    payload=row.payload,
-                    headers={
-                        "event_id": str(row.event_id),
-                        "correlation_id": str(row.correlation_id),
-                        "schema_version": row.schema_version,
-                        "aggregate_version": row.aggregate_version,
-                    },
-                )
-            except Exception as exc:
-                OrderOutbox.objects.filter(pk=row.pk).update(attempts=row.attempts + 1)
-                self.stderr.write(f"outbox {row.pk} publish failed: {exc}")
-                continue
-
-            OrderOutbox.objects.filter(pk=row.pk).update(
-                status=OrderOutbox.Status.PUBLISHED,
-                published_at=timezone.now(),
-                attempts=row.attempts + 1,
+    def _claim(self, worker_id: str) -> list[OrderOutbox]:
+        now = timezone.now()
+        eligible = (
+            Q(status=OrderOutbox.Status.PENDING)
+            & (Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
+            & (Q(locked_until__isnull=True) | Q(locked_until__lt=now))
+        )
+        with transaction.atomic():
+            rows = list(
+                OrderOutbox.objects.select_for_update(skip_locked=True)
+                .filter(eligible)
+                .order_by("created_at")[:BATCH]
             )
-            published += 1
-        return published
+            if rows:
+                OrderOutbox.objects.filter(pk__in=[r.pk for r in rows]).update(
+                    locked_until=now + timedelta(seconds=LEASE_SECONDS), locked_by=worker_id
+                )
+        return rows
+
+    def _drain(self, worker_id: str, gauge=None) -> int:
+        rows = self._claim(worker_id)
+        for row in rows:
+            self._publish_one(worker_id, row)
+        if gauge is not None:
+            oldest = (
+                OrderOutbox.objects.filter(status=OrderOutbox.Status.PENDING)
+                .order_by("created_at")
+                .values_list("created_at", flat=True)
+                .first()
+            )
+            gauge.set((timezone.now() - oldest).total_seconds() if oldest else 0.0)
+        return len(rows)
+
+    def _publish_one(self, worker_id: str, row: OrderOutbox) -> None:
+        now = timezone.now()
+        try:
+            messaging.publish(row.routing_key, row.event_type, row.payload, _headers(row))
+        except Exception as exc:  # broker down / unconfirmed -> keep pending, backoff
+            attempts = row.attempts + 1
+            OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id).update(
+                attempts=attempts,
+                next_attempt_at=now + timedelta(seconds=_backoff_seconds(attempts)),
+                last_error=str(exc)[:1000],
+                locked_until=None,
+                locked_by="",
+            )
+            self.stderr.write(f"outbox {row.pk} publish failed (attempt {attempts}): {exc}")
+            return
+        OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id).update(
+            status=OrderOutbox.Status.PUBLISHED,
+            published_at=now,
+            attempts=row.attempts + 1,
+            locked_until=None,
+            locked_by="",
+        )

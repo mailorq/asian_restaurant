@@ -29,12 +29,16 @@ class OrderOutbox(models.Model):
         max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True
     )
     attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    locked_by = models.CharField(max_length=64, blank=True)
+    last_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     published_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["created_at"]
-        indexes = [models.Index(fields=["status", "created_at"])]
+        indexes = [models.Index(fields=["status", "next_attempt_at"])]
 
     def __str__(self) -> str:
         return f"{self.event_type}:{self.aggregate_id} ({self.status})"
