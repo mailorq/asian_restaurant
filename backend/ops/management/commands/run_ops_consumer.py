@@ -9,14 +9,25 @@ from orders import messaging
 
 log = logging.getLogger(__name__)
 
+KNOWN_EVENT_TYPES = {"order.created", "order.status_changed"}
+SUPPORTED_SCHEMA = 1
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 class Command(BaseCommand):
-    help = "Consume order events from RabbitMQ and project them into RestaurantOrder (ops runtime)."
+    help = "Consume order events from RabbitMQ into the RestaurantOrder projection (ops runtime)."
 
     def handle(self, *args, **options) -> None:
         connection = messaging.connect()
         channel = connection.channel()
         messaging.declare_topology(channel)
+        channel.confirm_delivery()  # retry re publishes must be broker confirmed
         channel.basic_qos(prefetch_count=10)
         channel.basic_consume(queue=messaging.OPS_QUEUE, on_message_callback=self._on_message)
         self.stdout.write(self.style.SUCCESS(f"ops consumer listening on {messaging.OPS_QUEUE}"))
@@ -29,42 +40,55 @@ class Command(BaseCommand):
 
     def _on_message(self, channel, method, properties, body) -> None:
         headers = properties.headers or {}
-        retries = int(headers.get("x-retries", 0) or 0)
+        retries = _safe_int(headers.get("x-retries"), 0)
+        event_type = properties.type
 
+        # envelope validation anything unusable is poison; never crash the consumer
+        if event_type not in KNOWN_EVENT_TYPES or _safe_int(headers.get("schema_version")) != SUPPORTED_SCHEMA:
+            log.warning("ops rejecting: type=%r schema=%r -> DLQ", event_type, headers.get("schema_version"))
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
         try:
             payload = json.loads(body)
         except (json.JSONDecodeError, ValueError):
-            log.exception("ops poison message (bad json), dead-lettering")
+            log.exception("ops poison (bad json) -> DLQ")
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        if not isinstance(payload, dict) or "order_id" not in payload:
+            log.warning("ops poison (missing order_id) -> DLQ")
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
 
         try:
             service.apply_event(
                 event_id=headers.get("event_id") or properties.message_id,
-                event_type=properties.type,
-                aggregate_version=int(headers.get("aggregate_version") or 0),
+                event_type=event_type,
+                aggregate_version=_safe_int(headers.get("aggregate_version")),
                 payload=payload,
             )
         except (KeyError, TypeError):
-            # unusable payload -> poison, straight to the DLQ
-            log.exception("ops poison message (bad payload) %s, dead-lettering", headers.get("event_id"))
+            log.exception("ops poison (bad payload) -> DLQ")
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         except (service.OutOfOrder, DatabaseError):
-            # transient / out-of-order -> delayed retry, then DLQ once exhausted
-            if retries >= messaging.MAX_RETRIES:
-                log.warning("ops retries exhausted for %s, dead-lettering", headers.get("event_id"))
-                channel.basic_nack(method.delivery_tag, requeue=False)
-                return
-            messaging._publish(
-                channel,
-                messaging.RETRY_EXCHANGE,
-                method.routing_key,
-                properties.type,
-                payload,
-                {**headers, "x-retries": retries + 1},
-            )
-            channel.basic_ack(method.delivery_tag)
+            self._retry(channel, method, properties, payload, retries)
             return
 
         channel.basic_ack(method.delivery_tag)
+
+    def _retry(self, channel, method, properties, payload, retries: int) -> None:
+        if retries >= messaging.MAX_RETRIES:
+            log.warning("ops retries exhausted (%s) -> DLQ", messaging.MAX_RETRIES)
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        headers = {**(properties.headers or {}), "x-retries": retries + 1}
+        try:
+            messaging.publish_message(
+                channel, messaging.RETRY_EXCHANGE, method.routing_key, properties.type, payload, headers
+            )
+        except Exception:
+            # retry publish not confirmed by the broker do not lose the original
+            log.exception("ops retry publish failed; requeueing original")
+            channel.basic_nack(method.delivery_tag, requeue=True)
+            return
+        channel.basic_ack(method.delivery_tag)  # only after the retry is confirmed

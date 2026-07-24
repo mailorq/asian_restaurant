@@ -64,12 +64,12 @@ def publish(routing_key: str, event_type: str, payload: dict, headers: dict) -> 
         channel = conn.channel()
         declare_topology(channel)
         channel.confirm_delivery()
-        _publish(channel, EXCHANGE, routing_key, event_type, payload, headers)
+        publish_message(channel, EXCHANGE, routing_key, event_type, payload, headers)
     finally:
         conn.close()
 
 
-def _publish(channel, exchange, routing_key, event_type, payload, headers) -> None:
+def publish_message(channel, exchange, routing_key, event_type, payload, headers) -> None:
     channel.basic_publish(
         exchange=exchange,
         routing_key=routing_key,
