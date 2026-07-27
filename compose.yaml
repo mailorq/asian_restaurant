@@ -97,6 +97,77 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # --- independent operations service (own DB, own credentials) ---
+  operations-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${OPERATIONS_DB_NAME:-operations}
+      POSTGRES_USER: ${OPERATIONS_DB_USER:-ops_user}
+      POSTGRES_PASSWORD: ${OPERATIONS_DB_PASSWORD:-ops_pass}
+    volumes:
+      - operations_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  operations-api:
+    build:
+      context: .
+      dockerfile: services/order_operations/Dockerfile
+      target: prod
+    environment:
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
+      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
+      STOREFRONT_DSN_FOR_ISOLATION: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@db:5432/${POSTGRES_DB}
+    depends_on:
+      operations-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    expose:
+      - "9000"
+    restart: unless-stopped
+
+  operations-consumer:
+    build:
+      context: .
+      dockerfile: services/order_operations/Dockerfile
+      target: prod
+    command: python manage.py run_operations_consumer
+    environment:
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
+      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
+    depends_on:
+      operations-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      operations-api:
+        condition: service_started
+    restart: unless-stopped
+
+  operations-bridge:
+    build:
+      context: .
+      dockerfile: services/order_operations/Dockerfile
+      target: prod
+    command: python manage.py bridge_storefront_events
+    environment:
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
+      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      operations-consumer:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -129,3 +200,4 @@ volumes:
   promdata:
   rabbitmqdata:
   redis_data:
+  operations_pgdata:
