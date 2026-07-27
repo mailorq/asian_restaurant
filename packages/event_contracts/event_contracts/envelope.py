@@ -1,0 +1,40 @@
+import datetime as dt
+import uuid
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class Aggregate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str
+    id: str
+    version: int = Field(ge=1)
+
+
+class Envelope(BaseModel):
+    """Transport-agnostic message envelope shared by every event and command.
+
+    `extra="ignore"` on the envelope lets a newer producer add top-level fields
+    without breaking an older consumer; `data` is validated by the per-type model.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: uuid.UUID
+    event_type: str
+    schema_version: int = Field(ge=1)
+    occurred_at: dt.datetime
+    producer: str
+    aggregate: Aggregate
+    correlation_id: uuid.UUID
+    causation_id: uuid.UUID | None = None
+    trace_id: str | None = None
+    data: dict[str, Any]
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _require_utc(cls, value: dt.datetime) -> dt.datetime:
+        if value.tzinfo is None:
+            raise ValueError("occurred_at must be timezone-aware (UTC)")
+        return value.astimezone(dt.timezone.utc)
