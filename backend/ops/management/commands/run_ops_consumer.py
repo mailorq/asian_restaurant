@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
@@ -18,6 +19,16 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _valid_uuid(value) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        uuid.UUID(value)
+        return True
+    except ValueError:
+        return False
 
 
 class Command(BaseCommand):
@@ -42,10 +53,24 @@ class Command(BaseCommand):
         headers = properties.headers or {}
         retries = _safe_int(headers.get("x-retries"), 0)
         event_type = properties.type
+        event_id = headers.get("event_id") or properties.message_id
+        aggregate_version = headers.get("aggregate_version")
+        correlation_id = headers.get("correlation_id") or getattr(properties, "correlation_id", None)
 
-        # envelope validation anything unusable is poison; never crash the consumer
-        if event_type not in KNOWN_EVENT_TYPES or _safe_int(headers.get("schema_version")) != SUPPORTED_SCHEMA:
-            log.warning("ops rejecting: type=%r schema=%r -> DLQ", event_type, headers.get("schema_version"))
+        # strict envelope validation — never dedup on "None", never coerce a bad
+        # aggregate_version to 0; anything unusable is poison -> DLQ, no crash.
+        if (
+            event_type not in KNOWN_EVENT_TYPES
+            or _safe_int(headers.get("schema_version")) != SUPPORTED_SCHEMA
+            or not _valid_uuid(event_id)
+            or not isinstance(aggregate_version, int)
+            or aggregate_version < 1
+            or not _valid_uuid(correlation_id)
+        ):
+            log.warning(
+                "ops invalid envelope: type=%r schema=%r event_id=%r agg_v=%r corr=%r -> DLQ",
+                event_type, headers.get("schema_version"), event_id, aggregate_version, correlation_id,
+            )
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         try:
@@ -61,9 +86,9 @@ class Command(BaseCommand):
 
         try:
             service.apply_event(
-                event_id=headers.get("event_id") or properties.message_id,
+                event_id=event_id,
                 event_type=event_type,
-                aggregate_version=_safe_int(headers.get("aggregate_version")),
+                aggregate_version=aggregate_version,
                 payload=payload,
             )
         except (KeyError, TypeError):

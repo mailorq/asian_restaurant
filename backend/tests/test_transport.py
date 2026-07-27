@@ -1,9 +1,12 @@
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from django.utils import timezone
 
 from ops import service
 from ops.management.commands.run_ops_consumer import Command as OpsConsumer
@@ -17,8 +20,15 @@ pytestmark = pytest.mark.django_db
 
 def _msg(event_type="order.created", schema=1, retries=0, order_id=1):
     method = SimpleNamespace(delivery_tag=1, routing_key=event_type)
-    headers = {"schema_version": schema, "event_id": "e1", "aggregate_version": 1, "x-retries": retries}
-    props = SimpleNamespace(type=event_type, message_id="e1", headers=headers)
+    event_id = str(uuid.uuid4())
+    headers = {
+        "schema_version": schema,
+        "event_id": event_id,
+        "correlation_id": str(uuid.uuid4()),
+        "aggregate_version": 1,
+        "x-retries": retries,
+    }
+    props = SimpleNamespace(type=event_type, message_id=event_id, headers=headers)
     body = json.dumps({"order_id": order_id, "status": "created", "items": []}).encode()
     return method, props, body
 
@@ -38,9 +48,33 @@ def test_unknown_event_type_goes_to_dlq():
 
 def test_missing_order_id_goes_to_dlq():
     channel = Mock()
-    method = SimpleNamespace(delivery_tag=1, routing_key="order.created")
-    props = SimpleNamespace(type="order.created", message_id="e1", headers={"schema_version": 1})
+    method, props, _ = _msg()  # valid envelope, but body lacks order_id
     OpsConsumer()._on_message(channel, method, props, b'{"status":"created"}')
+    channel.basic_nack.assert_called_once_with(1, requeue=False)
+
+
+def test_missing_correlation_id_goes_to_dlq():
+    channel = Mock()
+    method, props, body = _msg()
+    del props.headers["correlation_id"]
+    OpsConsumer()._on_message(channel, method, props, body)
+    channel.basic_nack.assert_called_once_with(1, requeue=False)
+
+
+def test_aggregate_version_below_one_goes_to_dlq():
+    channel = Mock()
+    method, props, body = _msg()
+    props.headers["aggregate_version"] = 0
+    OpsConsumer()._on_message(channel, method, props, body)
+    channel.basic_nack.assert_called_once_with(1, requeue=False)
+
+
+def test_non_uuid_event_id_goes_to_dlq():
+    channel = Mock()
+    method, props, body = _msg()
+    props.headers["event_id"] = "None"
+    props.message_id = "None"
+    OpsConsumer()._on_message(channel, method, props, body)
     channel.basic_nack.assert_called_once_with(1, requeue=False)
 
 
@@ -91,7 +125,7 @@ def _outbox(**kw):
 
 
 def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
-    row = _outbox(locked_by="w1")
+    row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
     monkeypatch.setattr(messaging, "publish", Mock(side_effect=Exception("broker down")))
     Relay()._publish_one("w1", row)
     row.refresh_from_db()
@@ -102,7 +136,7 @@ def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
 
 
 def test_relay_success_marks_published(monkeypatch):
-    row = _outbox(locked_by="w1")
+    row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
     monkeypatch.setattr(messaging, "publish", Mock())
     Relay()._publish_one("w1", row)
     row.refresh_from_db()
@@ -121,6 +155,27 @@ def test_claim_leases_rows_so_a_second_worker_skips_them():
     first = relay._claim("w1")
     assert len(first) == 5
     assert relay._claim("w2") == []  # all leased -> nothing left
+
+
+def test_expired_lease_is_reclaimed_by_second_worker():
+    row = _outbox()
+    relay = Relay()
+    assert [r.pk for r in relay._claim("w1")] == [row.pk]
+
+    OrderOutbox.objects.filter(pk=row.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
+
+    assert [r.pk for r in relay._claim("w2")] == [row.pk]  # lease expired -> reclaimable
+    row.refresh_from_db()
+    assert row.locked_by == "w2"
+
+
+def test_publish_not_committed_when_lease_expired(monkeypatch):
+    # a slow worker whose lease already expired must not flip status
+    row = _outbox(locked_by="w1", locked_until=timezone.now() - timedelta(seconds=1))
+    monkeypatch.setattr(messaging, "publish", Mock())
+    Relay()._publish_one("w1", row)
+    row.refresh_from_db()
+    assert row.status == OrderOutbox.Status.PENDING
 
 
 @pytest.mark.django_db(transaction=True)

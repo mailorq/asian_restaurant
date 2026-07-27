@@ -103,7 +103,7 @@ class Command(BaseCommand):
             messaging.publish(row.routing_key, row.event_type, row.payload, _headers(row))
         except Exception as exc:  # broker down / unconfirmed -> keep pending, backoff
             attempts = row.attempts + 1
-            OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id).update(
+            OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id, locked_until__gte=now).update(
                 attempts=attempts,
                 next_attempt_at=now + timedelta(seconds=_backoff_seconds(attempts)),
                 last_error=str(exc)[:1000],
@@ -112,7 +112,7 @@ class Command(BaseCommand):
             )
             self.stderr.write(f"outbox {row.pk} publish failed (attempt {attempts}): {exc}")
             return
-        OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id).update(
+        OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id, locked_until__gte=now).update(
             status=OrderOutbox.Status.PUBLISHED,
             published_at=now,
             attempts=row.attempts + 1,
