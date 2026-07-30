@@ -36,9 +36,11 @@ def _order_payload(order: Order, items: list[OrderItem]) -> dict:
         "items": [
             {
                 "product_id": i.product_id,
+                "product_code": i.product.code,
                 "name": i.product_name,
                 "quantity": i.quantity,
                 "unit_price": str(i.unit_price),
+                "line_total": str(i.line_total),
             }
             for i in items
         ],
