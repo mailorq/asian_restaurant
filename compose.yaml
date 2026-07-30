@@ -30,11 +30,10 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
+      - ./ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./ops/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
@@ -121,8 +120,7 @@ services:
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
-      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
-      STOREFRONT_DSN_FOR_ISOLATION: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@db:5432/${POSTGRES_DB}
+      OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
     depends_on:
       operations-db:
         condition: service_healthy
@@ -141,7 +139,7 @@ services:
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
-      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
+      OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
     depends_on:
       operations-db:
         condition: service_healthy
@@ -160,7 +158,8 @@ services:
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
-      OPERATIONS_RABBITMQ_URL: ${RABBITMQ_URL}
+      OPERATIONS_BRIDGE_CONSUME_URL: ${OPERATIONS_BRIDGE_CONSUME_URL}
+      OPERATIONS_BRIDGE_PUBLISH_URL: ${OPERATIONS_BRIDGE_PUBLISH_URL}
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -1,0 +1,13 @@
+services:
+  operations-api:
+    build:
+      target: dev
+    environment:
+      STOREFRONT_DSN_FOR_ISOLATION: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@db:5432/${POSTGRES_DB}
+    volumes:
+      - ./services/order_operations:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      operations-db:
+        condition: service_healthy
