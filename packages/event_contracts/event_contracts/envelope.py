@@ -37,4 +37,4 @@ class Envelope(BaseModel):
     def _require_utc(cls, value: dt.datetime) -> dt.datetime:
         if value.tzinfo is None:
             raise ValueError("occurred_at must be timezone-aware (UTC)")
-        return value.astimezone(dt.timezone.utc)
+        return value.astimezone(dt.UTC)

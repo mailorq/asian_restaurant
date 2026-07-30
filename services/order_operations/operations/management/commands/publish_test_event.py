@@ -35,7 +35,14 @@ class Command(BaseCommand):
                 "address": "ул. Тестовая 1",
                 "address_verified": False,
                 "items": [
-                    {"product_code": "dish_1", "name": "Рамен", "quantity": 2, "unit_price": "150.00", "line_total": "300.00"}
+                    {
+                        "source_product_id": 1,
+                        "product_code": "dish_1",
+                        "name": "Рамен",
+                        "quantity": 2,
+                        "unit_price": "150.00",
+                        "line_total": "300.00",
+                    }
                 ],
             },
         }

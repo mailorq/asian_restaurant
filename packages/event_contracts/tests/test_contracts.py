@@ -1,11 +1,13 @@
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
 from event_contracts import (
     EVENT_ORDER_CREATED,
+    ContractError,
     Envelope,
     OrderCreatedData,
     UnknownEventType,
@@ -18,7 +20,7 @@ def _envelope(**override) -> dict:
         "event_id": str(uuid.uuid4()),
         "event_type": EVENT_ORDER_CREATED,
         "schema_version": 1,
-        "occurred_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
         "producer": "storefront",
         "aggregate": {"type": "order", "id": "1", "version": 1},
         "correlation_id": str(uuid.uuid4()),
@@ -28,7 +30,14 @@ def _envelope(**override) -> dict:
             "status": "created",
             "total": "100.00",
             "items": [
-                {"product_code": "d1", "name": "Рамен", "quantity": 2, "unit_price": "50.00", "line_total": "100.00"}
+                {
+                    "source_product_id": 7,
+                    "product_code": "dish_1",
+                    "name": "Рамен",
+                    "quantity": 2,
+                    "unit_price": "50.00",
+                    "line_total": "100.00",
+                }
             ],
         },
     }
@@ -76,3 +85,41 @@ def test_backward_compatible_additions_are_ignored():
     payload["data"]["loyalty_tier"] = "gold"
     _envelope_obj, data = parse_event(payload)
     assert not hasattr(data, "loyalty_tier")
+
+
+def test_v1_requires_schema_version_1():
+    with pytest.raises(ContractError):
+        parse_event(_envelope(schema_version=2))
+
+
+def test_aggregate_type_mismatch_rejected():
+    with pytest.raises(ContractError):
+        parse_event(_envelope(aggregate={"type": "product", "id": "1", "version": 1}))
+
+
+def test_aggregate_id_must_match_event_data():
+    with pytest.raises(ContractError):
+        parse_event(_envelope(aggregate={"type": "order", "id": "999", "version": 1}))
+
+
+def test_invalid_status_rejected():
+    payload = _envelope()
+    payload["data"]["status"] = "teleporting"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_item_requires_product_code():
+    payload = _envelope()
+    del payload["data"]["items"][0]["product_code"]
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_money_uses_decimal_without_float_rounding():
+    payload = _envelope()
+    payload["data"]["items"][0].update(unit_price="19.99", quantity=3, line_total="59.97")
+    payload["data"]["total"] = "59.97"
+    _envelope_obj, data = parse_event(payload)
+    assert data.items[0].line_total == Decimal("59.97")
+    assert data.items[0].unit_price * data.items[0].quantity == Decimal("59.97")
