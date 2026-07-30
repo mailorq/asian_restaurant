@@ -1,5 +1,6 @@
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 import pytest
 from event_contracts import EVENT_ORDER_CREATED, EVENT_ORDER_STATUS_CHANGED, parse_event
@@ -10,7 +11,16 @@ from operations.models import CustomerProjection, InboxEvent, OperationOrder
 pytestmark = pytest.mark.django_db
 
 
-def _created(order_id=1, version=1, customer_id=7, status="created"):
+def _created(order_id=1, version=1, customer_id=7, status="created", items=None, total="100.00"):
+    if items is None:
+        items = [{
+            "source_product_id": 1,
+            "product_code": "dish_1",
+            "name": "Рамен",
+            "quantity": 2,
+            "unit_price": "50.00",
+            "line_total": "100.00",
+        }]
     raw = {
         "event_id": str(uuid.uuid4()),
         "event_type": EVENT_ORDER_CREATED,
@@ -23,9 +33,9 @@ def _created(order_id=1, version=1, customer_id=7, status="created"):
             "order_id": order_id,
             "customer_id": customer_id,
             "status": status,
-            "total": "100.00",
+            "total": total,
             "recipient_name": "Иван",
-            "items": [{"product_code": "d1", "name": "Рамен", "quantity": 2, "unit_price": "50.00", "line_total": "100.00"}],
+            "items": items,
         },
     }
     return parse_event(raw)
@@ -76,3 +86,31 @@ def test_status_update_advances_projection():
     status_env, status_data = _status(order_id=12, version=2, status="confirmed")
     projection.apply(status_env, status_data)
     assert OperationOrder.objects.get(source_order_id=12).status == "confirmed"
+
+
+def test_late_created_snapshot_does_not_regress_newer_status():
+    created_env, created_data = _created(order_id=13, version=1)
+    projection.apply(created_env, created_data)
+    status_env, status_data = _status(order_id=13, version=2, status="confirmed")
+    projection.apply(status_env, status_data)
+
+    stale_env, stale_data = _created(order_id=13, version=1, status="created")
+    assert projection.apply(stale_env, stale_data) is True
+    order = OperationOrder.objects.get(source_order_id=13)
+    assert order.status == "confirmed" and order.aggregate_version == 2
+
+
+def test_money_projected_as_decimal_without_float_rounding():
+    items = [{
+        "source_product_id": 1,
+        "product_code": "dish_1",
+        "name": "Гёдза",
+        "quantity": 3,
+        "unit_price": "19.99",
+        "line_total": "59.97",
+    }]
+    env, data = _created(order_id=14, items=items, total="59.97")
+    projection.apply(env, data)
+    item = OperationOrder.objects.get(source_order_id=14).items.get()
+    assert item.line_total == Decimal("59.97")
+    assert item.unit_price * item.quantity == Decimal("59.97")

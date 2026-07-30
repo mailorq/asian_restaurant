@@ -49,6 +49,10 @@ def apply(envelope: Envelope, data) -> bool:
 
 
 def _order_created(envelope: Envelope, data) -> None:
+    existing = OperationOrder.objects.filter(source_order_id=data.order_id).first()
+    if existing and existing.aggregate_version > envelope.aggregate.version:
+        # replayed/out-of-order snapshot must not regress a newer projection
+        return
     order, _ = OperationOrder.objects.update_or_create(
         source_order_id=data.order_id,
         defaults={
