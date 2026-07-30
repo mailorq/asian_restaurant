@@ -30,6 +30,24 @@ are ignored by older consumers; breaking changes require a new event version.
 | Legacy bridge (temporary) | `python manage.py bridge_storefront_events` |
 | Test event (verification) | `python manage.py publish_test_event --order-id N --customer-id M` |
 
+## Messaging isolation
+
+Storefront and operations live in **separate RabbitMQ vhosts** with separate users,
+provisioned from `ops/rabbitmq/definitions.json` at broker boot. Operations never
+receives the storefront AMQP URL:
+
+- `storefront` vhost — `storefront_app` (full within its own vhost).
+- `operations` vhost — `operations_consumer`, scoped to `^operations\.` (reads only
+  its own queues, writes only its own exchanges).
+- The bridge is the only cross-vhost actor: `operations_bridge` reads `orders` on the
+  storefront vhost and writes only `operations.events` on the operations vhost. It uses
+  two connections and never declares storefront-owned resources.
+
+The bridge is reliable: it validates each mapped envelope against the contract before
+publishing, acks the legacy delivery only after the versioned publish is confirmed,
+sends poison messages to its own DLQ, and delays transient failures through a bounded
+retry queue (`operations.bridge.*`) before giving up to the DLQ.
+
 ## Run (dev)
 
 ```bash
@@ -44,6 +62,11 @@ docker compose exec operations-db psql -U ops_user -d operations -c "\dt"
 docker compose exec operations-api sh -lc "cd /packages/event_contracts && python -m pytest"
 docker compose exec operations-api sh -lc "cd /app && pytest"
 
+# isolation test that needs the storefront DSN (CI/test profile only; never in prod/dev)
+docker compose -f compose.yaml -f compose.test.yaml up -d db operations-api
+docker compose -f compose.yaml -f compose.test.yaml exec operations-api \
+  sh -lc "cd /app && pytest tests/test_isolation.py"
+
 # shadow round-trip
 docker compose exec operations-api python manage.py publish_test_event --order-id 555999 --customer-id 88
 docker compose exec operations-db psql -U ops_user -d operations -c \
@@ -56,7 +79,9 @@ docker compose exec operations-db psql -U ops_user -d operations -c \
 |---|---|
 | `OPERATIONS_DATABASE_URL` | operations DB (ops role); never the storefront DB |
 | `OPERATIONS_SECRET_KEY` | own secret, not shared with storefront |
-| `OPERATIONS_RABBITMQ_URL` | event/command bus |
+| `OPERATIONS_RABBITMQ_URL` | consumer/api bus — operations vhost only |
+| `OPERATIONS_BRIDGE_CONSUME_URL` | bridge input — storefront vhost (adapter user) |
+| `OPERATIONS_BRIDGE_PUBLISH_URL` | bridge output — operations vhost (adapter user) |
 | `IDENTITY_JWKS_URL` | Identity public keys for JWT verification (Phase 3) |
 
 ## Auth (design; wired in Phase 3)
