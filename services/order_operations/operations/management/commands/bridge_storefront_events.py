@@ -98,14 +98,20 @@ def _map_data(event_type: str, legacy: dict) -> dict:
     }
 
 
+ORIGIN_PRODUCER = "storefront"
+RELAYED_BY = "storefront-bridge"
+
+
 def build_envelope(properties, event_type: str, legacy: dict) -> dict:
     headers = properties.headers or {}
     return {
         "event_id": headers.get("event_id") or properties.message_id,
         "event_type": event_type,
         "schema_version": 1,
-        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
-        "producer": "storefront-bridge",
+        # carry the origin's occurred_at; the bridge is not the source of truth for time
+        "occurred_at": headers.get("occurred_at") or dt.datetime.now(dt.UTC).isoformat(),
+        "producer": ORIGIN_PRODUCER,
+        "relayed_by": RELAYED_BY,
         "aggregate": {
             "type": "order",
             "id": str(legacy["order_id"]),
@@ -156,7 +162,8 @@ class Command(BaseCommand):
         try:
             # ack the legacy delivery only after the versioned publish is confirmed
             messaging.publish_envelope(
-                self.publish_channel, messaging.EXCHANGE, event_type, envelope, {"event_id": envelope["event_id"]}
+                self.publish_channel, messaging.EXCHANGE, event_type, envelope,
+                {"event_id": envelope["event_id"], "x-relayed-by": RELAYED_BY},
             )
         except Exception:
             self._retry(channel, method, properties, body)
