@@ -30,6 +30,8 @@ class Envelope(BaseModel):
     correlation_id: uuid.UUID
     causation_id: uuid.UUID | None = None
     trace_id: str | None = None
+    # set by an adapter that relays another service's event; producer stays the origin
+    relayed_by: str | None = None
     data: dict[str, Any]
 
     @field_validator("occurred_at")

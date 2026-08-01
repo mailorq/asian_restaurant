@@ -1,7 +1,8 @@
 from decimal import Decimal
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from event_contracts.envelope import Envelope
 
@@ -9,6 +10,8 @@ EVENT_ORDER_CREATED = "orders.order.created.v1"
 EVENT_ORDER_STATUS_CHANGED = "orders.order.status_changed.v1"
 EVENT_STOCK_CHANGED = "inventory.stock_changed.v1"
 EVENT_CUSTOMER_CHANGED = "identity.customer_changed.v1"
+
+Money = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]
 
 
 class UnknownEventType(ValueError):
@@ -30,30 +33,42 @@ class OrderStatus(StrEnum):
 
 class OrderItemData(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    source_product_id: int
+    source_product_id: int = Field(gt=0)
     product_code: str = Field(min_length=1)
     name: str
     quantity: int = Field(ge=1)
-    unit_price: Decimal
-    line_total: Decimal
+    unit_price: Money
+    line_total: Money
+
+    @model_validator(mode="after")
+    def _line_total_matches(self) -> "OrderItemData":
+        if self.line_total != self.unit_price * self.quantity:
+            raise ValueError("line_total must equal unit_price * quantity")
+        return self
 
 
 class OrderCreatedData(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    order_id: int
-    customer_id: int
+    order_id: int = Field(gt=0)
+    customer_id: int = Field(gt=0)
     status: OrderStatus
-    total: Decimal
+    total: Money
     recipient_name: str = ""
     phone: str = ""
     address: str = ""
     address_verified: bool = False
     items: list[OrderItemData] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _total_matches_items(self) -> "OrderCreatedData":
+        if self.items and self.total != sum(i.line_total for i in self.items):
+            raise ValueError("total must equal sum(line_total)")
+        return self
+
 
 class OrderStatusChangedData(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    order_id: int
+    order_id: int = Field(gt=0)
     status: OrderStatus
     from_status: str = ""
 
@@ -67,7 +82,7 @@ class StockChangedData(BaseModel):
 
 class CustomerChangedData(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    customer_id: int
+    customer_id: int = Field(gt=0)
     name: str = ""
     phone: str = ""
 
