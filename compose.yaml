@@ -33,7 +33,7 @@ services:
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
       - ./ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./ops/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
