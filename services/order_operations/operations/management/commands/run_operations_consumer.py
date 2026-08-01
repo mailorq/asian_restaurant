@@ -8,6 +8,7 @@ from event_contracts import UnknownEventType, parse_event
 from pydantic import ValidationError
 
 from operations import messaging, projection
+from operations.metrics import projection_events
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,20 @@ class Command(BaseCommand):
             return
         try:
             projection.apply(envelope, data)
-        except (projection.OutOfOrder, DatabaseError):
+        except projection.ProjectionConflict as exc:
+            log.warning(
+                "operations projection conflict -> DLQ",
+                extra={"event_id": str(envelope.event_id), "event_type": envelope.event_type,
+                       "aggregate_id": exc.aggregate_id, "version": exc.version},
+            )
+            projection_events.labels(envelope.event_type, "conflict").inc()
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        except projection.OutOfOrder:
+            projection_events.labels(envelope.event_type, "out_of_order").inc()
+            self._retry(channel, method, properties, body, retries)
+            return
+        except DatabaseError:
             self._retry(channel, method, properties, body, retries)
             return
         channel.basic_ack(method.delivery_tag)

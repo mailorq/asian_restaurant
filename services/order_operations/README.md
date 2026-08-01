@@ -32,21 +32,24 @@ are ignored by older consumers; breaking changes require a new event version.
 
 ## Messaging isolation
 
-Storefront and operations live in **separate RabbitMQ vhosts** with separate users,
-provisioned from `ops/rabbitmq/definitions.json` at broker boot. Operations never
-receives the storefront AMQP URL:
-
-- `storefront` vhost — `storefront_app` (full within its own vhost).
-- `operations` vhost — `operations_consumer`, scoped to `^operations\.` (reads only
-  its own queues, writes only its own exchanges).
-- The bridge is the only cross-vhost actor: `operations_bridge` reads `orders` on the
-  storefront vhost and writes only `operations.events` on the operations vhost. It uses
-  two connections and never declares storefront-owned resources.
+Storefront and operations live in **separate RabbitMQ vhosts** with separate users and
+minimal permissions. Provisioning and the full permission matrix are in
+[`ops/rabbitmq/README.md`](../../ops/rabbitmq/README.md) (dev template + `provision.sh`
+for prod). Operations never receives the storefront AMQP URL.
 
 The bridge is reliable: it validates each mapped envelope against the contract before
 publishing, acks the legacy delivery only after the versioned publish is confirmed,
 sends poison messages to its own DLQ, and delays transient failures through a bounded
-retry queue (`operations.bridge.*`) before giving up to the DLQ.
+retry queue (`operations.bridge.*`) before giving up to the DLQ. It preserves the
+origin's `occurred_at` and keeps `producer=storefront`, tagging itself in `relayed_by`.
+
+## Projection version fencing
+
+The projection advances only on `incoming_version > current_version`. A lower version is
+a safe no-op (`operations_projection_events_total{outcome="stale"}`); the same version
+with a different `event_id` is a `ProjectionConflict` — the consumer routes it to the DLQ
+and records `outcome="conflict"` rather than overwriting. Re-delivery of the same
+`event_id` is idempotent via the inbox.
 
 ## Run (dev)
 
