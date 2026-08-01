@@ -8,10 +8,15 @@ from event_contracts import EVENT_ORDER_CREATED
 from operations.management.commands.bridge_storefront_events import (
     BRIDGE_MAX_RETRIES,
     BRIDGE_RETRY_EXCHANGE,
+    ORIGIN_PRODUCER,
+    RELAYED_BY,
     RETRY_HEADER,
     Command,
     _map_data,
+    build_envelope,
 )
+
+OCCURRED_AT = "2026-08-01T10:30:00+00:00"
 
 
 def _legacy(headers_extra=None, drop_product_code=False):
@@ -35,7 +40,12 @@ def _legacy(headers_extra=None, drop_product_code=False):
             "items": [item],
         }
     ).encode()
-    headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()), "aggregate_version": 1}
+    headers = {
+        "event_id": str(uuid.uuid4()),
+        "correlation_id": str(uuid.uuid4()),
+        "aggregate_version": 1,
+        "occurred_at": OCCURRED_AT,
+    }
     if headers_extra:
         headers.update(headers_extra)
     props = SimpleNamespace(
@@ -160,3 +170,25 @@ def test_map_data_line_total_fallback_uses_decimal():
     }
     item = _map_data(EVENT_ORDER_CREATED, legacy)["items"][0]
     assert item["line_total"] == "59.97"
+
+
+def test_envelope_preserves_origin_time_and_provenance():
+    props, _method, body = _legacy()
+    legacy = json.loads(body)
+    envelope = build_envelope(props, EVENT_ORDER_CREATED, legacy)
+    assert envelope["occurred_at"] == OCCURRED_AT
+    assert envelope["producer"] == ORIGIN_PRODUCER == "storefront"
+    assert envelope["relayed_by"] == RELAYED_BY
+
+    published = _publish_and_get_envelope()
+    assert published["occurred_at"] == OCCURRED_AT
+    assert published["producer"] == "storefront"
+
+
+def _publish_and_get_envelope():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy()
+    cmd._on_message(ch, method, props, body)
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    return json.loads(kwargs["body"])

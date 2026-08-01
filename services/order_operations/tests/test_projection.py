@@ -4,11 +4,18 @@ from decimal import Decimal
 
 import pytest
 from event_contracts import EVENT_ORDER_CREATED, EVENT_ORDER_STATUS_CHANGED, parse_event
+from prometheus_client import REGISTRY
 
 from operations import projection
 from operations.models import CustomerProjection, InboxEvent, OperationOrder
 
 pytestmark = pytest.mark.django_db
+
+
+def _metric(event_type: str, outcome: str) -> float:
+    return REGISTRY.get_sample_value(
+        "operations_projection_events_total", {"event_type": event_type, "outcome": outcome}
+    ) or 0.0
 
 
 def _created(order_id=1, version=1, customer_id=7, status="created", items=None, total="100.00"):
@@ -98,6 +105,39 @@ def test_late_created_snapshot_does_not_regress_newer_status():
     assert projection.apply(stale_env, stale_data) is True
     order = OperationOrder.objects.get(source_order_id=13)
     assert order.status == "confirmed" and order.aggregate_version == 2
+
+
+def test_conflicting_status_same_version_is_rejected():
+    created_env, created_data = _created(order_id=30, version=1)
+    projection.apply(created_env, created_data)
+    s1_env, s1_data = _status(order_id=30, version=2, status="confirmed")
+    projection.apply(s1_env, s1_data)
+
+    before = _metric(EVENT_ORDER_STATUS_CHANGED, "conflict")
+    s2_env, s2_data = _status(order_id=30, version=2, status="preparing")
+    with pytest.raises(projection.ProjectionConflict):
+        projection.apply(s2_env, s2_data)
+
+    order = OperationOrder.objects.get(source_order_id=30)
+    assert order.status == "confirmed" and order.aggregate_version == 2
+    assert not InboxEvent.objects.filter(event_id=s2_env.event_id).exists()
+    # the conflict metric is owned by the consumer (it routes to DLQ), not by apply()
+    assert _metric(EVENT_ORDER_STATUS_CHANGED, "conflict") == before
+
+
+def test_stale_lower_version_status_is_safe_noop_with_metric():
+    created_env, created_data = _created(order_id=31, version=1)
+    projection.apply(created_env, created_data)
+    advance_env, advance_data = _status(order_id=31, version=3, status="preparing")
+    projection.apply(advance_env, advance_data)
+
+    before = _metric(EVENT_ORDER_STATUS_CHANGED, "stale")
+    stale_env, stale_data = _status(order_id=31, version=2, status="confirmed")
+    assert projection.apply(stale_env, stale_data) is True
+
+    order = OperationOrder.objects.get(source_order_id=31)
+    assert order.status == "preparing" and order.aggregate_version == 3
+    assert _metric(EVENT_ORDER_STATUS_CHANGED, "stale") == before + 1
 
 
 def test_money_projected_as_decimal_without_float_rounding():

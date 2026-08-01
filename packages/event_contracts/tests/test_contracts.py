@@ -123,3 +123,56 @@ def test_money_uses_decimal_without_float_rounding():
     _envelope_obj, data = parse_event(payload)
     assert data.items[0].line_total == Decimal("59.97")
     assert data.items[0].unit_price * data.items[0].quantity == Decimal("59.97")
+
+
+def test_order_id_must_be_positive():
+    payload = _envelope()
+    payload["data"]["order_id"] = 0
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_customer_id_must_be_positive():
+    payload = _envelope()
+    payload["data"]["customer_id"] = 0
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_source_product_id_must_be_positive():
+    payload = _envelope()
+    payload["data"]["items"][0]["source_product_id"] = 0
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_negative_money_rejected():
+    payload = _envelope()
+    payload["data"]["items"][0].update(unit_price="-1.00", quantity=1, line_total="-1.00")
+    payload["data"]["total"] = "-1.00"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_more_than_two_decimal_places_rejected():
+    payload = _envelope()
+    payload["data"]["items"][0].update(unit_price="1.999", quantity=1, line_total="1.999")
+    payload["data"]["total"] = "1.999"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_line_total_must_equal_unit_price_times_quantity():
+    payload = _envelope()
+    payload["data"]["items"][0].update(unit_price="50.00", quantity=2, line_total="99.99")
+    payload["data"]["total"] = "99.99"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_total_must_equal_sum_of_line_totals():
+    payload = _envelope()
+    payload["data"]["items"][0].update(unit_price="50.00", quantity=2, line_total="100.00")
+    payload["data"]["total"] = "123.45"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
