@@ -10,7 +10,7 @@ from prometheus_client import start_http_server
 from pydantic import ValidationError
 
 from operations import messaging, projection
-from operations.metrics import projection_events
+from operations.metrics import consumer_connected, projection_events
 
 log = logging.getLogger(__name__)
 
@@ -27,12 +27,14 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options) -> None:
         start_http_server(settings.METRICS_PORT)
+        consumer_connected.set(0)
         connection = messaging.connect()
         channel = connection.channel()
         messaging.declare_topology(channel)
         channel.confirm_delivery()
         channel.basic_qos(prefetch_count=10)
         channel.basic_consume(queue=messaging.QUEUE, on_message_callback=self._on_message)
+        consumer_connected.set(1)  # topology declared and consuming; readiness is now true
         self.stdout.write(
             self.style.SUCCESS(
                 f"operations consumer listening on {messaging.QUEUE}; metrics on :{settings.METRICS_PORT}"
@@ -43,6 +45,7 @@ class Command(BaseCommand):
         except KeyboardInterrupt:
             channel.stop_consuming()
         finally:
+            consumer_connected.set(0)
             connection.close()
 
     def _on_message(self, channel, method, properties, body) -> None:

@@ -1,0 +1,34 @@
+groups:
+  - name: operations
+    rules:
+      - alert: OperationsConsumerDown
+        expr: operations_consumer_connected == 0 or absent(operations_consumer_connected)
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "operations consumer not connected to RabbitMQ"
+          description: "operations_consumer_connected is 0/absent — the projection consumer is not consuming."
+
+      - alert: OperationsDLQNotEmpty
+        expr: rabbitmq_queue_messages{queue=~"operations.*dlq"} > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "poison events in an operations DLQ ({{ $labels.queue }})"
+          description: "{{ $value }} message(s) in {{ $labels.queue }} — investigate rejected events."
+
+      - alert: OperationsRetryQueueGrowing
+        expr: rabbitmq_queue_messages{queue=~"operations.*retry"} > 20
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "operations retry queue backing up ({{ $labels.queue }})"
+          description: "{{ $value }} message(s) stuck in retry — a downstream dependency may be failing."
+
+      - alert: OperationsConflictOrStaleEvents
+        expr: increase(operations_projection_events_total{outcome=~"conflict|stale"}[10m]) > 0
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "operations projection saw {{ $labels.outcome }} events"
+          description: "Conflicting or stale versioned events indicate producer version drift."
