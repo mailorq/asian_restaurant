@@ -119,6 +119,18 @@ def test_contract_violation_is_poison_not_retried():
     cmd.publish_channel.basic_publish.assert_not_called()
 
 
+def test_missing_occurred_at_goes_to_dlq():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy()
+    del props.headers["occurred_at"]
+
+    cmd._on_message(ch, method, props, body)
+
+    ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=False)
+    cmd.publish_channel.basic_publish.assert_not_called()
+
+
 def test_publish_failure_is_retried():
     cmd = _cmd(publish_side_effect=Exception("broker down"))
     ch = MagicMock()

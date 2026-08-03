@@ -1,4 +1,3 @@
-import datetime as dt
 import json
 import logging
 from decimal import Decimal
@@ -108,8 +107,8 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
         "event_id": headers.get("event_id") or properties.message_id,
         "event_type": event_type,
         "schema_version": 1,
-        # carry the origin's occurred_at; the bridge is not the source of truth for time
-        "occurred_at": headers.get("occurred_at") or dt.datetime.now(dt.UTC).isoformat(),
+        # origin time only; the bridge never invents occurred_at (see _on_message guard)
+        "occurred_at": headers["occurred_at"],
         "producer": ORIGIN_PRODUCER,
         "relayed_by": RELAYED_BY,
         "aggregate": {
@@ -149,6 +148,11 @@ class Command(BaseCommand):
     def _on_message(self, channel, method, properties, body) -> None:
         event_type = LEGACY_TO_VERSIONED.get(properties.type)
         if event_type is None:
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        if not (properties.headers or {}).get("occurred_at"):
+            # origin time is required; substituting now() would falsify provenance
+            log.warning("bridge missing_occurred_at -> DLQ", extra={"message_id": properties.message_id})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         try:
