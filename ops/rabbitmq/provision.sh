@@ -45,4 +45,13 @@ rabbitmqctl set_permissions -p storefront operations_bridge \
 rabbitmqctl set_permissions -p operations operations_bridge \
   '^operations\.events$' '^operations\.events$' '^$'
 
+# revoke any stale rights in vhosts each user must not touch (isolation is enforced,
+# not just granted - a leftover grant from an earlier layout would breach it)
+revoke() { rabbitmqctl clear_permissions -p "$1" "$2" 2>/dev/null || true; }
+revoke / storefront_app
+revoke operations storefront_app
+revoke / operations_consumer
+revoke storefront operations_consumer
+revoke / operations_bridge
+
 echo "rabbitmq provisioning complete"

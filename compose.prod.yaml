@@ -1,0 +1,10 @@
+services:
+  rabbitmq:
+    # production must not load the dev template; !override drops the rabbitmq.conf and
+    # definitions.dev.json mounts so load_definitions is off. Bootstrap with a baseline
+    # admin, then converge users/permissions with ops/rabbitmq/provision.sh (secrets).
+    volumes: !override
+      - rabbitmqdata:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD}
