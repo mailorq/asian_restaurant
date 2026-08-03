@@ -176,3 +176,21 @@ def test_total_must_equal_sum_of_line_totals():
     payload["data"]["total"] = "123.45"
     with pytest.raises(ValidationError):
         parse_event(payload)
+
+
+def test_empty_order_with_nonzero_total_rejected():
+    payload = _envelope()
+    payload["data"]["items"] = []
+    payload["data"]["total"] = "100.00"
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+
+
+def test_total_wider_than_db_field_rejected():
+    big = {"source_product_id": 7, "product_code": "dish_1", "name": "X",
+           "quantity": 1, "unit_price": "50000000.00", "line_total": "50000000.00"}  # 10 digits, fits
+    payload = _envelope()
+    payload["data"]["items"] = [dict(big), dict(big)]
+    payload["data"]["total"] = "100000000.00"  # 11 digits -> exceeds max_digits=10
+    with pytest.raises(ValidationError):
+        parse_event(payload)

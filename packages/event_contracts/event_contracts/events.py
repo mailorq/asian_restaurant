@@ -11,7 +11,9 @@ EVENT_ORDER_STATUS_CHANGED = "orders.order.status_changed.v1"
 EVENT_STOCK_CHANGED = "inventory.stock_changed.v1"
 EVENT_CUSTOMER_CHANGED = "identity.customer_changed.v1"
 
-Money = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]
+# width matches the storefront DecimalField(max_digits=10, decimal_places=2); a value the
+# contract accepts must fit the DB, otherwise the projection write would fail downstream
+Money = Annotated[Decimal, Field(ge=0, max_digits=10, decimal_places=2)]
 
 
 class UnknownEventType(ValueError):
@@ -57,11 +59,11 @@ class OrderCreatedData(BaseModel):
     phone: str = ""
     address: str = ""
     address_verified: bool = False
-    items: list[OrderItemData] = Field(default_factory=list)
+    items: list[OrderItemData] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _total_matches_items(self) -> "OrderCreatedData":
-        if self.items and self.total != sum(i.line_total for i in self.items):
+        if self.total != sum(i.line_total for i in self.items):
             raise ValueError("total must equal sum(line_total)")
         return self
 
