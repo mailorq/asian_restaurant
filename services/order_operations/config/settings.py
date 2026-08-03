@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -10,6 +11,16 @@ environ.Env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("OPERATIONS_SECRET_KEY", default="ops-dev-insecure-change-me")
 DEBUG = env.bool("OPERATIONS_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("OPERATIONS_ALLOWED_HOSTS", default=["*"])
+PRODUCTION = env.bool("OPERATIONS_PRODUCTION", default=False)
+
+if PRODUCTION:
+    # refuse to boot production with dev fallbacks that would weaken auth or host checks
+    if SECRET_KEY.startswith("ops-dev-insecure"):
+        raise ImproperlyConfigured("OPERATIONS_SECRET_KEY must be set (no dev fallback) in production")
+    if "*" in ALLOWED_HOSTS:
+        raise ImproperlyConfigured("OPERATIONS_ALLOWED_HOSTS must be restricted in production")
+    if DEBUG:
+        raise ImproperlyConfigured("OPERATIONS_DEBUG must be off in production")
 
 INSTALLED_APPS = ["operations"]
 

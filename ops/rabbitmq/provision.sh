@@ -7,6 +7,9 @@
 # Required env:
 #   RABBITMQ_ADMIN_USER RABBITMQ_ADMIN_PASSWORD
 #   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD
+# Optional env:
+#   RABBITMQ_NODE  target a remote node (e.g. rabbit@rabbitmq) — set by the one-shot
+#                  rabbitmq-provision service; unset when run inside the broker.
 #
 # Run inside the broker container, e.g.:
 #   docker compose exec -T \
@@ -21,33 +24,37 @@ set -euo pipefail
 : "${OPERATIONS_MQ_PASSWORD:?set OPERATIONS_MQ_PASSWORD}"
 : "${BRIDGE_MQ_PASSWORD:?set BRIDGE_MQ_PASSWORD}"
 
-ensure_vhost() { rabbitmqctl add_vhost "$1" 2>/dev/null || true; }
-ensure_user() { rabbitmqctl add_user "$1" "$2" 2>/dev/null || rabbitmqctl change_password "$1" "$2"; }
+ctl() {
+  if [ -n "${RABBITMQ_NODE:-}" ]; then rabbitmqctl -n "$RABBITMQ_NODE" "$@"; else rabbitmqctl "$@"; fi
+}
+
+ensure_vhost() { ctl add_vhost "$1" 2>/dev/null || true; }
+ensure_user() { ctl add_user "$1" "$2" 2>/dev/null || ctl change_password "$1" "$2"; }
+revoke() { ctl clear_permissions -p "$1" "$2" 2>/dev/null || true; }
 
 ensure_vhost /
 ensure_vhost storefront
 ensure_vhost operations
 
 ensure_user "$RABBITMQ_ADMIN_USER" "$RABBITMQ_ADMIN_PASSWORD"
-rabbitmqctl set_user_tags "$RABBITMQ_ADMIN_USER" administrator
+ctl set_user_tags "$RABBITMQ_ADMIN_USER" administrator
 ensure_user storefront_app "$STOREFRONT_MQ_PASSWORD"
 ensure_user operations_consumer "$OPERATIONS_MQ_PASSWORD"
 ensure_user operations_bridge "$BRIDGE_MQ_PASSWORD"
 
 for v in / storefront operations; do
-  rabbitmqctl set_permissions -p "$v" "$RABBITMQ_ADMIN_USER" '.*' '.*' '.*'
+  ctl set_permissions -p "$v" "$RABBITMQ_ADMIN_USER" '.*' '.*' '.*'
 done
 
-rabbitmqctl set_permissions -p storefront storefront_app '.*' '.*' '.*'
-rabbitmqctl set_permissions -p operations operations_consumer '^operations\.' '^operations\.' '^operations\.'
-rabbitmqctl set_permissions -p storefront operations_bridge \
+ctl set_permissions -p storefront storefront_app '.*' '.*' '.*'
+ctl set_permissions -p operations operations_consumer '^operations\.' '^operations\.' '^operations\.'
+ctl set_permissions -p storefront operations_bridge \
   '^operations\.bridge\.' '^operations\.bridge\.' '^(orders|operations\.bridge\.)'
-rabbitmqctl set_permissions -p operations operations_bridge \
+ctl set_permissions -p operations operations_bridge \
   '^operations\.events$' '^operations\.events$' '^$'
 
 # revoke any stale rights in vhosts each user must not touch (isolation is enforced,
 # not just granted - a leftover grant from an earlier layout would breach it)
-revoke() { rabbitmqctl clear_permissions -p "$1" "$2" 2>/dev/null || true; }
 revoke / storefront_app
 revoke operations storefront_app
 revoke / operations_consumer

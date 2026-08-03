@@ -1,10 +1,62 @@
 services:
   rabbitmq:
     # production must not load the dev template; !override drops the rabbitmq.conf and
-    # definitions.dev.json mounts so load_definitions is off. Bootstrap with a baseline
-    # admin, then converge users/permissions with ops/rabbitmq/provision.sh (secrets).
+    # definitions.dev.json mounts so load_definitions is off. Bootstrap a baseline admin,
+    # then converge users/permissions with the rabbitmq-provision one-shot below.
+    hostname: rabbitmq
     volumes: !override
       - rabbitmqdata:/var/lib/rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
+
+  # explicit deployment step: run once (idempotent) to create vhosts/users/permissions
+  #   docker compose -f compose.yaml -f compose.prod.yaml run --rm rabbitmq-provision
+  rabbitmq-provision:
+    image: rabbitmq:3.13-management-alpine
+    profiles: ["provision"]
+    hostname: rabbitmq-provision
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_NODE: rabbit@rabbitmq
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}
+      STOREFRONT_MQ_PASSWORD: ${STOREFRONT_MQ_PASSWORD:?set STOREFRONT_MQ_PASSWORD}
+      OPERATIONS_MQ_PASSWORD: ${OPERATIONS_MQ_PASSWORD:?set OPERATIONS_MQ_PASSWORD}
+      BRIDGE_MQ_PASSWORD: ${BRIDGE_MQ_PASSWORD:?set BRIDGE_MQ_PASSWORD}
+    volumes:
+      - ./ops/rabbitmq/provision.sh:/provision.sh:ro
+    entrypoint: ["bash", "/provision.sh"]
+    restart: "no"
+
+  operations-api:
+    environment:
+      OPERATIONS_PRODUCTION: "1"
+      OPERATIONS_DEBUG: "0"
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:?set OPERATIONS_SECRET_KEY}
+      OPERATIONS_ALLOWED_HOSTS: ${OPERATIONS_ALLOWED_HOSTS:?set OPERATIONS_ALLOWED_HOSTS}
+      OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
+      OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL:?set OPERATIONS_RABBITMQ_URL}
+
+  operations-consumer:
+    environment:
+      OPERATIONS_PRODUCTION: "1"
+      OPERATIONS_DEBUG: "0"
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:?set OPERATIONS_SECRET_KEY}
+      OPERATIONS_ALLOWED_HOSTS: ${OPERATIONS_ALLOWED_HOSTS:?set OPERATIONS_ALLOWED_HOSTS}
+      OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
+      OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL:?set OPERATIONS_RABBITMQ_URL}
+
+  operations-bridge:
+    environment:
+      OPERATIONS_PRODUCTION: "1"
+      OPERATIONS_DEBUG: "0"
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:?set OPERATIONS_SECRET_KEY}
+      OPERATIONS_ALLOWED_HOSTS: ${OPERATIONS_ALLOWED_HOSTS:?set OPERATIONS_ALLOWED_HOSTS}
+      OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
+      OPERATIONS_BRIDGE_CONSUME_URL: ${OPERATIONS_BRIDGE_CONSUME_URL:?set OPERATIONS_BRIDGE_CONSUME_URL}
+      OPERATIONS_BRIDGE_PUBLISH_URL: ${OPERATIONS_BRIDGE_PUBLISH_URL:?set OPERATIONS_BRIDGE_PUBLISH_URL}
