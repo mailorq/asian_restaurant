@@ -36,6 +36,9 @@ BRIDGE_PUBLISH_URL = env("OPERATIONS_BRIDGE_PUBLISH_URL", default=RABBITMQ_URL)
 
 IDENTITY_JWKS_URL = env("IDENTITY_JWKS_URL", default="")
 
+# consumer exposes its own metrics; the API process cannot see the consumer's counters
+METRICS_PORT = env.int("OPERATIONS_METRICS_PORT", default=9101)
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
 TIME_ZONE = "UTC"

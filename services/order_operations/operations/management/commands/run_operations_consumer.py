@@ -2,9 +2,11 @@ import json
 import logging
 
 import pika
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
 from event_contracts import UnknownEventType, parse_event
+from prometheus_client import start_http_server
 from pydantic import ValidationError
 
 from operations import messaging, projection
@@ -24,13 +26,18 @@ class Command(BaseCommand):
     help = "Shadow-mode consumer: builds operations projections from versioned domain events."
 
     def handle(self, *args, **options) -> None:
+        start_http_server(settings.METRICS_PORT)
         connection = messaging.connect()
         channel = connection.channel()
         messaging.declare_topology(channel)
         channel.confirm_delivery()
         channel.basic_qos(prefetch_count=10)
         channel.basic_consume(queue=messaging.QUEUE, on_message_callback=self._on_message)
-        self.stdout.write(self.style.SUCCESS(f"operations consumer listening on {messaging.QUEUE}"))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"operations consumer listening on {messaging.QUEUE}; metrics on :{settings.METRICS_PORT}"
+            )
+        )
         try:
             channel.start_consuming()
         except KeyboardInterrupt:

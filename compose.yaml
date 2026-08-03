@@ -140,6 +140,9 @@ services:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
+      OPERATIONS_METRICS_PORT: "9101"
+    expose:
+      - "9101"
     depends_on:
       operations-db:
         condition: service_healthy
