@@ -2,12 +2,13 @@ import phonenumbers
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
+from accounts import service as accounts_service
 from accounts.models import User
 from accounts.schemas import LoginIn, MessageOut, RegisterIn, UserOut
 from common.ratelimit import rate_limit
@@ -41,9 +42,11 @@ def register(request, data: RegisterIn):
     if User.objects.filter(phone=phone).exists():
         raise HttpError(400, "Этот номер уже зарегистрирован")
     try:
-        user = User.objects.create_user(
-            username=phone, phone=phone, password=data.password, first_name=name
-        )
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=phone, phone=phone, password=data.password, first_name=name
+            )
+            accounts_service.emit_customer_created(user)
     except IntegrityError as exc:
         raise HttpError(400, "Этот номер уже зарегистрирован") from exc
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")

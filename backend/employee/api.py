@@ -1,5 +1,4 @@
 from django.contrib.auth import get_user_model
-from django.db import transaction
 from django.db.models import Count, Q
 from ninja import Router
 from ninja.errors import HttpError
@@ -17,6 +16,7 @@ from employee.schemas import (
     TransitionIn,
     UserDetailOut,
 )
+from menu import inventory as inventory_service
 from menu.models import Product, StockAdjustment
 from orders import service as order_service
 from orders.models import ACTIVE_ORDER_STATUSES, Order
@@ -76,21 +76,9 @@ def inventory(request, search: str | None = None):
 @router.post("/inventory/{product_id}/adjust", response=InventoryItemOut)
 @employee_required
 def adjust_stock(request, product_id: int, data: AdjustIn):
-    with transaction.atomic():
-        product = Product.objects.select_for_update().filter(id=product_id).first()
-        if product is None:
-            raise HttpError(404, "Товар не найден")
-        old_quantity = product.stock_quantity
-        if data.new_quantity != old_quantity:
-            product.stock_quantity = data.new_quantity
-            product.save(update_fields=["stock_quantity"])
-            StockAdjustment.objects.create(
-                product=product,
-                staff=request.auth,
-                old_quantity=old_quantity,
-                new_quantity=data.new_quantity,
-                reason=data.reason,
-            )
+    product = inventory_service.set_stock(product_id, data.new_quantity, reason=data.reason, staff=request.auth)
+    if product is None:
+        raise HttpError(404, "Товар не найден")
     return product
 
 

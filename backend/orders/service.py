@@ -3,7 +3,8 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction
 
 from cart import service as cart_service
-from menu.models import Product, StockAdjustment
+from menu import inventory
+from menu.models import Product
 from orders import geocode as geo
 from orders.models import (
     DeliveryAddress,
@@ -116,15 +117,8 @@ def _create_order(
                 line_total=line_total,
             )
         )
-        old_quantity = product.stock_quantity
-        product.stock_quantity = old_quantity - quantity
-        product.save(update_fields=["stock_quantity"])
-        StockAdjustment.objects.create(
-            product=product,
-            staff=None,
-            old_quantity=old_quantity,
-            new_quantity=product.stock_quantity,
-            reason=f"order #{order.id}",
+        inventory.record_stock_change(
+            product, product.stock_quantity - quantity, reason=f"order #{order.id}"
         )
 
     OrderItem.objects.bulk_create(items)

@@ -28,6 +28,8 @@ class Product(models.Model):
     image = models.ImageField(upload_to="products/", blank=True)
     ingredients = models.ManyToManyField(Ingredient, related_name="products", blank=True)
     stock_quantity = models.PositiveIntegerField(default=0)
+    # initial state is v1; bumped on every stock change so projections can version-fence
+    version = models.PositiveIntegerField(default=1)
     is_active = models.BooleanField(default=True)
     is_featured = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

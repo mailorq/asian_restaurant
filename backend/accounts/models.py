@@ -9,6 +9,8 @@ EMPLOYEE_GROUP = "restaurant_employee"
 class User(AbstractUser):
     # phone stored normalized to E.164, e.g. +380671234567
     phone = models.CharField(max_length=16, unique=True, blank=True, null=True)
+    # initial state is v1; bumped on name/phone change so the projection can version-fence
+    customer_version = models.PositiveIntegerField(default=1)
 
     def __str__(self) -> str:
         return self.username

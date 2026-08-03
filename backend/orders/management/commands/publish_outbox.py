@@ -38,6 +38,7 @@ def _headers(row: OrderOutbox) -> dict:
         "aggregate_version": row.aggregate_version,
         # domain occurred_at travels with the event so downstream never re-times it
         "occurred_at": row.created_at.isoformat(),
+        "snapshot": row.snapshot,
     }
 
 
