@@ -16,6 +16,7 @@ from operations.models import (
     InventoryProjection,
     OperationOrder,
     OperationOrderItem,
+    SnapshotExpectation,
 )
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ def apply(envelope: Envelope, data) -> bool:
     if not created:
         projection_events.labels(envelope.event_type, "idempotent").inc()
         return False
+
+    if envelope.snapshot:
+        _record_expectation(envelope, data)
+        return True
 
     if envelope.event_type == EVENT_ORDER_CREATED:
         _order_created(envelope, data)
@@ -151,3 +156,20 @@ def _recount_customer(customer_id: int) -> None:
     CustomerProjection.objects.update_or_create(
         source_customer_id=customer_id, defaults={"active_orders_count": count}
     )
+
+
+def _record_expectation(envelope: Envelope, data) -> None:
+    # snapshots reconcile expected state; a newer snapshot wins, an older one is ignored,
+    # and a repeat is an idempotent upsert — never a version conflict
+    existing = SnapshotExpectation.objects.select_for_update().filter(
+        aggregate_type=envelope.aggregate.type, aggregate_id=envelope.aggregate.id
+    ).first()
+    if existing and existing.aggregate_version > envelope.aggregate.version:
+        projection_events.labels(envelope.event_type, "snapshot_stale").inc()
+        return
+    SnapshotExpectation.objects.update_or_create(
+        aggregate_type=envelope.aggregate.type,
+        aggregate_id=envelope.aggregate.id,
+        defaults={"aggregate_version": envelope.aggregate.version, "payload": data.model_dump(mode="json")},
+    )
+    projection_events.labels(envelope.event_type, "snapshot").inc()

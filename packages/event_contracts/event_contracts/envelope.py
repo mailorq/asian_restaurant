@@ -32,6 +32,9 @@ class Envelope(BaseModel):
     trace_id: str | None = None
     # set by an adapter that relays another service's event; producer stays the origin
     relayed_by: str | None = None
+    # a snapshot re-states current aggregate state for reconciliation; consumers must
+    # treat it as an upsert of expected state, not as a new version-fenced change
+    snapshot: bool = False
     data: dict[str, Any]
 
     @field_validator("occurred_at")

@@ -23,6 +23,22 @@ class OperationOrder(models.Model):
         return f"OperationOrder<{self.source_order_id}> ({self.status})"
 
 
+class SnapshotExpectation(models.Model):
+    aggregate_type = models.CharField(max_length=16)
+    aggregate_id = models.CharField(max_length=64)
+    aggregate_version = models.PositiveIntegerField(default=0)
+    payload = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["aggregate_type", "aggregate_id"], name="uniq_snapshot_aggregate"),
+        ]
+
+    def __str__(self) -> str:
+        return f"snapshot<{self.aggregate_type}:{self.aggregate_id}> v{self.aggregate_version}"
+
+
 class OperationOrderItem(models.Model):
     order = models.ForeignKey(OperationOrder, on_delete=models.CASCADE, related_name="items")
     product_code = models.CharField(max_length=64)

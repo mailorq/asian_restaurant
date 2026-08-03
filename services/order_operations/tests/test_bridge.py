@@ -59,12 +59,48 @@ def _legacy(headers_extra=None, drop_product_code=False):
     return props, method, body
 
 
+def _legacy_stock(snapshot=False):
+    body = json.dumps({"product_code": "dish_3", "name": "Рамен", "stock_quantity": 12}).encode()
+    headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()),
+               "aggregate_version": 4, "occurred_at": OCCURRED_AT, "snapshot": snapshot}
+    props = SimpleNamespace(type="inventory.stock_changed", message_id=str(uuid.uuid4()),
+                            correlation_id=str(uuid.uuid4()), content_type="application/json", headers=headers)
+    method = SimpleNamespace(delivery_tag=1, routing_key="inventory.stock_changed")
+    return props, method, body
+
+
 def _cmd(publish_side_effect=None):
     cmd = Command()
     cmd.publish_channel = MagicMock()
     if publish_side_effect is not None:
         cmd.publish_channel.basic_publish.side_effect = publish_side_effect
     return cmd
+
+
+def test_stock_event_maps_to_product_aggregate():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy_stock()
+
+    cmd._on_message(ch, method, props, body)
+
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    env = json.loads(kwargs["body"])
+    assert env["aggregate"] == {"type": "product", "id": "dish_3", "version": 4}
+    assert env["data"]["stock_quantity"] == 12
+    assert env["snapshot"] is False
+    ch.basic_ack.assert_called_once_with(method.delivery_tag)
+
+
+def test_snapshot_flag_is_propagated():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy_stock(snapshot=True)
+
+    cmd._on_message(ch, method, props, body)
+
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    assert json.loads(kwargs["body"])["snapshot"] is True
 
 
 def test_valid_created_is_published_and_acked():

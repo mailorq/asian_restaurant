@@ -5,7 +5,13 @@ from decimal import Decimal
 import pika
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from event_contracts import EVENT_ORDER_CREATED, EVENT_ORDER_STATUS_CHANGED, parse_event
+from event_contracts import (
+    EVENT_CUSTOMER_CHANGED,
+    EVENT_ORDER_CREATED,
+    EVENT_ORDER_STATUS_CHANGED,
+    EVENT_STOCK_CHANGED,
+    parse_event,
+)
 
 from operations import messaging
 
@@ -28,6 +34,16 @@ RETRY_HEADER = "x-bridge-retries"
 LEGACY_TO_VERSIONED = {
     "order.created": EVENT_ORDER_CREATED,
     "order.status_changed": EVENT_ORDER_STATUS_CHANGED,
+    "inventory.stock_changed": EVENT_STOCK_CHANGED,
+    "identity.customer_changed": EVENT_CUSTOMER_CHANGED,
+}
+
+# aggregate type + the legacy payload key that holds the aggregate id
+_AGGREGATE = {
+    EVENT_ORDER_CREATED: ("order", "order_id"),
+    EVENT_ORDER_STATUS_CHANGED: ("order", "order_id"),
+    EVENT_STOCK_CHANGED: ("product", "product_code"),
+    EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
 }
 
 
@@ -56,7 +72,8 @@ def declare_bridge_topology(channel) -> None:
     channel.queue_bind(queue=BRIDGE_RETRY_QUEUE, exchange=BRIDGE_RETRY_EXCHANGE, routing_key="#")
 
     channel.queue_declare(queue=BRIDGE_QUEUE, durable=True, arguments={"x-dead-letter-exchange": BRIDGE_DLX})
-    channel.queue_bind(queue=BRIDGE_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key="order.*")
+    for key in ("order.*", "inventory.*", "identity.*"):
+        channel.queue_bind(queue=BRIDGE_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key=key)
     channel.queue_bind(queue=BRIDGE_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key="#")
 
 
@@ -90,6 +107,18 @@ def _map_data(event_type: str, legacy: dict) -> dict:
             "address_verified": legacy.get("address_verified", False),
             "items": items,
         }
+    if event_type == EVENT_STOCK_CHANGED:
+        return {
+            "product_code": legacy["product_code"],
+            "name": legacy.get("name", ""),
+            "stock_quantity": _safe_int(legacy.get("stock_quantity")),
+        }
+    if event_type == EVENT_CUSTOMER_CHANGED:
+        return {
+            "customer_id": _safe_int(legacy["customer_id"]),
+            "name": legacy.get("name", ""),
+            "phone": legacy.get("phone", ""),
+        }
     return {
         "order_id": legacy["order_id"],
         "status": legacy.get("status", ""),
@@ -103,6 +132,7 @@ RELAYED_BY = "storefront-bridge"
 
 def build_envelope(properties, event_type: str, legacy: dict) -> dict:
     headers = properties.headers or {}
+    agg_type, id_key = _AGGREGATE[event_type]
     return {
         "event_id": headers.get("event_id") or properties.message_id,
         "event_type": event_type,
@@ -111,9 +141,10 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
         "occurred_at": headers["occurred_at"],
         "producer": ORIGIN_PRODUCER,
         "relayed_by": RELAYED_BY,
+        "snapshot": bool(headers.get("snapshot")),
         "aggregate": {
-            "type": "order",
-            "id": str(legacy["order_id"]),
+            "type": agg_type,
+            "id": str(legacy[id_key]),
             "version": _safe_int(headers.get("aggregate_version"), 1),
         },
         "correlation_id": headers.get("correlation_id") or properties.correlation_id,
