@@ -53,20 +53,13 @@ def apply(envelope: Envelope, data) -> bool:
     elif envelope.event_type == EVENT_ORDER_STATUS_CHANGED:
         _order_status_changed(envelope, data)
     elif envelope.event_type == EVENT_STOCK_CHANGED:
-        InventoryProjection.objects.update_or_create(
-            product_code=data.product_code,
-            defaults={"name": data.name, "stock_quantity": data.stock_quantity},
-        )
-        projection_events.labels(envelope.event_type, "applied").inc()
+        _stock_changed(envelope, data)
     elif envelope.event_type == EVENT_CUSTOMER_CHANGED:
-        CustomerProjection.objects.update_or_create(
-            source_customer_id=data.customer_id, defaults={"name": data.name, "phone": data.phone}
-        )
-        projection_events.labels(envelope.event_type, "applied").inc()
+        _customer_changed(envelope, data)
     return True
 
 
-def _fence(envelope: Envelope, current_version: int) -> str:
+def _fence(envelope: Envelope, current_version: int, aggregate: str) -> str:
     incoming = envelope.aggregate.version
     if incoming < current_version:
         log.info(
@@ -78,14 +71,14 @@ def _fence(envelope: Envelope, current_version: int) -> str:
         projection_events.labels(envelope.event_type, "stale").inc()
         return "stale"
     if incoming == current_version:
-        raise ProjectionConflict("order", envelope.aggregate.id, incoming, envelope.event_id)
+        raise ProjectionConflict(aggregate, envelope.aggregate.id, incoming, envelope.event_id)
     return "apply"
 
 
 def _order_created(envelope: Envelope, data) -> None:
     # lock the row so the fencing check and write are atomic against a concurrent writer
     existing = OperationOrder.objects.select_for_update().filter(source_order_id=data.order_id).first()
-    if existing and _fence(envelope, existing.aggregate_version) == "stale":
+    if existing and _fence(envelope, existing.aggregate_version, "order") == "stale":
         return
     order, _ = OperationOrder.objects.update_or_create(
         source_order_id=data.order_id,
@@ -120,12 +113,36 @@ def _order_status_changed(envelope: Envelope, data) -> None:
     order = OperationOrder.objects.select_for_update().filter(source_order_id=data.order_id).first()
     if order is None:
         raise OutOfOrder(f"no projection for order {data.order_id}")
-    if _fence(envelope, order.aggregate_version) == "stale":
+    if _fence(envelope, order.aggregate_version, "order") == "stale":
         return
     order.status = data.status
     order.aggregate_version = envelope.aggregate.version
     order.save(update_fields=["status", "aggregate_version", "updated_at"])
     _recount_customer(order.customer_id)
+    projection_events.labels(envelope.event_type, "applied").inc()
+
+
+def _stock_changed(envelope: Envelope, data) -> None:
+    existing = InventoryProjection.objects.select_for_update().filter(product_code=data.product_code).first()
+    if existing and _fence(envelope, existing.aggregate_version, "product") == "stale":
+        return
+    InventoryProjection.objects.update_or_create(
+        product_code=data.product_code,
+        defaults={"name": data.name, "stock_quantity": data.stock_quantity,
+                  "aggregate_version": envelope.aggregate.version},
+    )
+    projection_events.labels(envelope.event_type, "applied").inc()
+
+
+def _customer_changed(envelope: Envelope, data) -> None:
+    existing = CustomerProjection.objects.select_for_update().filter(source_customer_id=data.customer_id).first()
+    if existing and _fence(envelope, existing.aggregate_version, "customer") == "stale":
+        return
+    CustomerProjection.objects.update_or_create(
+        source_customer_id=data.customer_id,
+        defaults={"name": data.name, "phone": data.phone,
+                  "aggregate_version": envelope.aggregate.version},
+    )
     projection_events.labels(envelope.event_type, "applied").inc()
 
 

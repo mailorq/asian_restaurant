@@ -40,6 +40,7 @@ class CustomerProjection(models.Model):
     name = models.CharField(max_length=150, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     active_orders_count = models.PositiveIntegerField(default=0)
+    aggregate_version = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:
@@ -50,6 +51,7 @@ class InventoryProjection(models.Model):
     product_code = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255, blank=True)
     stock_quantity = models.PositiveIntegerField(default=0)
+    aggregate_version = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:

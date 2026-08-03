@@ -3,11 +3,17 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from event_contracts import EVENT_ORDER_CREATED, EVENT_ORDER_STATUS_CHANGED, parse_event
+from event_contracts import (
+    EVENT_CUSTOMER_CHANGED,
+    EVENT_ORDER_CREATED,
+    EVENT_ORDER_STATUS_CHANGED,
+    EVENT_STOCK_CHANGED,
+    parse_event,
+)
 from prometheus_client import REGISTRY
 
 from operations import projection
-from operations.models import CustomerProjection, InboxEvent, OperationOrder
+from operations.models import CustomerProjection, InboxEvent, InventoryProjection, OperationOrder
 
 pytestmark = pytest.mark.django_db
 
@@ -58,6 +64,34 @@ def _status(order_id=1, version=2, status="confirmed"):
         "aggregate": {"type": "order", "id": str(order_id), "version": version},
         "correlation_id": str(uuid.uuid4()),
         "data": {"order_id": order_id, "status": status, "from_status": "created"},
+    }
+    return parse_event(raw)
+
+
+def _stock(product_code="dish_1", version=1, stock=10, name="Рамен"):
+    raw = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": EVENT_STOCK_CHANGED,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": "storefront",
+        "aggregate": {"type": "product", "id": product_code, "version": version},
+        "correlation_id": str(uuid.uuid4()),
+        "data": {"product_code": product_code, "name": name, "stock_quantity": stock},
+    }
+    return parse_event(raw)
+
+
+def _customer(customer_id=7, version=1, name="Иван", phone="+380670000000"):
+    raw = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": EVENT_CUSTOMER_CHANGED,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": "storefront",
+        "aggregate": {"type": "customer", "id": str(customer_id), "version": version},
+        "correlation_id": str(uuid.uuid4()),
+        "data": {"customer_id": customer_id, "name": name, "phone": phone},
     }
     return parse_event(raw)
 
@@ -154,3 +188,30 @@ def test_money_projected_as_decimal_without_float_rounding():
     item = OperationOrder.objects.get(source_order_id=14).items.get()
     assert item.line_total == Decimal("59.97")
     assert item.unit_price * item.quantity == Decimal("59.97")
+
+
+def test_stock_greater_version_updates_then_stale_is_noop():
+    projection.apply(*_stock(product_code="dish_9", version=1, stock=10))
+    projection.apply(*_stock(product_code="dish_9", version=2, stock=4))
+    assert InventoryProjection.objects.get(product_code="dish_9").stock_quantity == 4
+
+    projection.apply(*_stock(product_code="dish_9", version=1, stock=999))
+    row = InventoryProjection.objects.get(product_code="dish_9")
+    assert row.stock_quantity == 4 and row.aggregate_version == 2
+
+
+def test_stock_same_version_different_event_is_conflict():
+    projection.apply(*_stock(product_code="dish_8", version=1, stock=10))
+    with pytest.raises(projection.ProjectionConflict):
+        projection.apply(*_stock(product_code="dish_8", version=1, stock=3))
+    assert InventoryProjection.objects.get(product_code="dish_8").stock_quantity == 10
+
+
+def test_customer_version_fencing_update_and_conflict():
+    projection.apply(*_customer(customer_id=77, version=1, name="Иван"))
+    projection.apply(*_customer(customer_id=77, version=2, name="Пётр"))
+    assert CustomerProjection.objects.get(source_customer_id=77).name == "Пётр"
+
+    with pytest.raises(projection.ProjectionConflict):
+        projection.apply(*_customer(customer_id=77, version=2, name="Другой"))
+    assert CustomerProjection.objects.get(source_customer_id=77).name == "Пётр"
