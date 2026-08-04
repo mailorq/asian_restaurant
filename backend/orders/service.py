@@ -198,3 +198,16 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "", e
         payload={"order_id": locked.id, "status": new_status, "from_status": previous},
     )
     return locked
+
+
+def emit_order_state(order: Order, *, snapshot: bool = False) -> None:
+    # order aggregate version is the length of its status history
+    items = list(order.items.select_related("product").all())
+    OrderOutbox.objects.create(
+        aggregate_id=str(order.id),
+        aggregate_version=OrderStatusHistory.objects.filter(order=order).count(),
+        event_type="order.created",
+        routing_key="order.created",
+        snapshot=snapshot,
+        payload=_order_payload(order, items),
+    )
