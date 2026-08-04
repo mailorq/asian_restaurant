@@ -4,8 +4,12 @@ services:
     # definitions.dev.json mounts so load_definitions is off. Bootstrap a baseline admin,
     # then converge users/permissions with the rabbitmq-provision one-shot below.
     hostname: rabbitmq
+    # do not publish the management UI to the host in production (reach it via a tunnel);
+    # keeps 15672/15692 network-internal and avoids host-port clashes
+    ports: !override []
     volumes: !override
       - rabbitmqdata:/var/lib/rabbitmq
+      - ./ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}

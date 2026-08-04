@@ -32,6 +32,7 @@ services:
     image: rabbitmq:3.13-management-alpine
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
+      - ./ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
       - ./ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
       - ./ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:

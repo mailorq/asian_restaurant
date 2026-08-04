@@ -25,10 +25,20 @@ groups:
           summary: "operations retry queue backing up ({{ $labels.queue }})"
           description: "{{ $value }} message(s) stuck in retry — a downstream dependency may be failing."
 
-      - alert: OperationsConflictOrStaleEvents
-        expr: increase(operations_projection_events_total{outcome=~"conflict|stale"}[10m]) > 0
+      - alert: OperationsConflictEvents
+        # any conflict is a real fault (two events at one version) — separate from stale
+        expr: increase(operations_projection_events_total{outcome="conflict"}[5m]) > 0
         for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "operations projection saw a version conflict"
+          description: "Two distinct events claimed the same aggregate version — producer version drift."
+
+      - alert: OperationsStaleEventsElevated
+        # a single benign replay is one stale event; alert only on a sustained rate
+        expr: increase(operations_projection_events_total{outcome="stale"}[15m]) > 5
+        for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "operations projection saw {{ $labels.outcome }} events"
-          description: "Conflicting or stale versioned events indicate producer version drift."
+          summary: "elevated stale event rate in operations projection"
+          description: "More than 5 stale events in 15m sustained — likely reordered or duplicated delivery."
