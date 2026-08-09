@@ -37,6 +37,7 @@ def _legacy(headers_extra=None, drop_product_code=False):
             "status": "created",
             "total": "59.97",
             "recipient_name": "Иван",
+            "payment_method": "card",
             "items": [item],
         }
     ).encode()
@@ -69,12 +70,56 @@ def _legacy_stock(snapshot=False):
     return props, method, body
 
 
+def _legacy_control(phase="completed", run_id="run1", counts=None):
+    body = json.dumps({"run_id": run_id, "phase": phase, "counts": counts or {"product": 1}}).encode()
+    headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()),
+               "aggregate_version": 1, "occurred_at": OCCURRED_AT, "snapshot_run_id": run_id}
+    props = SimpleNamespace(type="snapshot.control", message_id=str(uuid.uuid4()),
+                            correlation_id=str(uuid.uuid4()), content_type="application/json", headers=headers)
+    method = SimpleNamespace(delivery_tag=1, routing_key="snapshot.control")
+    return props, method, body
+
+
 def _cmd(publish_side_effect=None):
     cmd = Command()
     cmd.publish_channel = MagicMock()
     if publish_side_effect is not None:
         cmd.publish_channel.basic_publish.side_effect = publish_side_effect
     return cmd
+
+
+def test_payment_method_is_passed_through():
+    legacy = {"order_id": 1, "user_id": 2, "status": "created", "total": "59.97", "payment_method": "card",
+              "items": [{"product_id": 3, "product_code": "d3", "name": "x", "quantity": 3,
+                         "unit_price": "19.99", "line_total": "59.97"}]}
+    assert _map_data(EVENT_ORDER_CREATED, legacy)["payment_method"] == "card"
+
+
+def test_snapshot_control_maps_to_snapshot_aggregate():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy_control(phase="completed", run_id="run1", counts={"product": 2})
+
+    cmd._on_message(ch, method, props, body)
+
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    env = json.loads(kwargs["body"])
+    assert env["aggregate"] == {"type": "snapshot", "id": "run1", "version": 1}
+    assert env["snapshot_run_id"] == "run1"
+    assert env["data"]["phase"] == "completed" and env["data"]["counts"] == {"product": 2}
+    ch.basic_ack.assert_called_once_with(method.delivery_tag)
+
+
+def test_snapshot_run_id_is_propagated():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy_stock(snapshot=True)
+    props.headers["snapshot_run_id"] = "runX"
+
+    cmd._on_message(ch, method, props, body)
+
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    assert json.loads(kwargs["body"])["snapshot_run_id"] == "runX"
 
 
 def test_stock_event_maps_to_product_aggregate():
@@ -113,6 +158,7 @@ def test_valid_created_is_published_and_acked():
     cmd.publish_channel.basic_publish.assert_called_once()
     _, kwargs = cmd.publish_channel.basic_publish.call_args
     published = json.loads(kwargs["body"])
+    assert published["data"]["payment_method"] == "card"
     item = published["data"]["items"][0]
     assert item["product_code"] == "dish_3"
     assert item["source_product_id"] == 3

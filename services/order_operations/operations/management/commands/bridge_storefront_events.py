@@ -9,6 +9,7 @@ from event_contracts import (
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
+    EVENT_SNAPSHOT_CONTROL,
     EVENT_STOCK_CHANGED,
     parse_event,
 )
@@ -36,6 +37,7 @@ LEGACY_TO_VERSIONED = {
     "order.status_changed": EVENT_ORDER_STATUS_CHANGED,
     "inventory.stock_changed": EVENT_STOCK_CHANGED,
     "identity.customer_changed": EVENT_CUSTOMER_CHANGED,
+    "snapshot.control": EVENT_SNAPSHOT_CONTROL,
 }
 
 # aggregate type + the legacy payload key that holds the aggregate id
@@ -44,6 +46,7 @@ _AGGREGATE = {
     EVENT_ORDER_STATUS_CHANGED: ("order", "order_id"),
     EVENT_STOCK_CHANGED: ("product", "product_code"),
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
+    EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
 }
 
 
@@ -72,7 +75,7 @@ def declare_bridge_topology(channel) -> None:
     channel.queue_bind(queue=BRIDGE_RETRY_QUEUE, exchange=BRIDGE_RETRY_EXCHANGE, routing_key="#")
 
     channel.queue_declare(queue=BRIDGE_QUEUE, durable=True, arguments={"x-dead-letter-exchange": BRIDGE_DLX})
-    for key in ("order.*", "inventory.*", "identity.*"):
+    for key in ("order.*", "inventory.*", "identity.*", "snapshot.*"):
         channel.queue_bind(queue=BRIDGE_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key=key)
     channel.queue_bind(queue=BRIDGE_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key="#")
 
@@ -105,6 +108,7 @@ def _map_data(event_type: str, legacy: dict) -> dict:
             "phone": legacy.get("phone", ""),
             "address": legacy.get("address", ""),
             "address_verified": legacy.get("address_verified", False),
+            "payment_method": legacy.get("payment_method"),
             "items": items,
         }
     if event_type == EVENT_STOCK_CHANGED:
@@ -118,6 +122,12 @@ def _map_data(event_type: str, legacy: dict) -> dict:
             "customer_id": _safe_int(legacy["customer_id"]),
             "name": legacy.get("name", ""),
             "phone": legacy.get("phone", ""),
+        }
+    if event_type == EVENT_SNAPSHOT_CONTROL:
+        return {
+            "run_id": legacy["run_id"],
+            "phase": legacy.get("phase", ""),
+            "counts": legacy.get("counts", {}),
         }
     return {
         "order_id": legacy["order_id"],
@@ -142,6 +152,7 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
         "producer": ORIGIN_PRODUCER,
         "relayed_by": RELAYED_BY,
         "snapshot": bool(headers.get("snapshot")),
+        "snapshot_run_id": headers.get("snapshot_run_id"),
         "aggregate": {
             "type": agg_type,
             "id": str(legacy[id_key]),

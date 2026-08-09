@@ -34,6 +34,7 @@ class Command(BaseCommand):
                 "phone": "+380671111111",
                 "address": "ул. Тестовая 1",
                 "address_verified": False,
+                "payment_method": "cash",
                 "items": [
                     {
                         "source_product_id": 1,
