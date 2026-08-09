@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.e2e
 compose.override.yaml
 
 # python / django

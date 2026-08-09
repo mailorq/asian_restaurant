@@ -1,9 +1,11 @@
 services:
   # the E2E project reaches everything over the internal network via `exec`, so it
-  # publishes no host ports and can run alongside the shared dev stack
+  # publishes no host ports and can run alongside the shared dev stack. It uses tracked
+  # .env.e2e (no local .env / gitignored override needed).
   rabbitmq:
     ports: !override []
   backend:
+    env_file: !override [.env.e2e]
     ports: !override []
   operations-api:
     ports: !override []
