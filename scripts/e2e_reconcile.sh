@@ -1,52 +1,55 @@
 #!/usr/bin/env bash
-# Real end-to-end reconciliation:
-#   source models -> emit_source_state -> publish_outbox (relay) -> bridge -> consumer -> reconcile
-# No manual pika publishing. Run from the repo root with Docker available.
+# Real end-to-end reconciliation in an ISOLATED Compose project with its own volumes:
+#   source models -> emit_source_state -> publish_outbox -> bridge -> consumer -> reconcile
+# Never touches the shared dev/staging project. No manual pika publishing.
 set -euo pipefail
 
-dc() { docker compose "$@"; }
-exec_be() { dc -f compose.yaml -f compose.override.yaml exec -T backend "$@"; }
-exec_ops() { dc exec -T operations-api "$@"; }
+if [ "${E2E_ALLOW_DESTRUCTIVE:-0}" != "1" ]; then
+  echo "refusing to run: this test creates and destroys an isolated stack." >&2
+  echo "re-run with E2E_ALLOW_DESTRUCTIVE=1" >&2
+  exit 2
+fi
 
-echo "== bring up full stack =="
-dc up -d db redis rabbitmq operations-db operations-api operations-consumer operations-bridge >/dev/null
-dc -f compose.yaml -f compose.override.yaml up -d backend >/dev/null
-sleep 8
+PROJ=ar_e2e
+CO=(-p "$PROJ" -f compose.yaml -f compose.override.yaml -f compose.e2e.yaml)
+dc() { docker compose "${CO[@]}" "$@"; }
+be() { dc exec -T backend "$@"; }
+ops() { dc exec -T operations-api "$@"; }
+bridge_ready() { dc logs operations-bridge 2>&1 | grep -q 'storefront bridge:'; }
+order_projected() { ops python manage.py shell -c "import sys; from operations.models import OperationOrder; sys.exit(0 if OperationOrder.objects.exists() else 1)"; }
 
-echo "== reset operations read side for a clean assertion =="
-exec_ops python manage.py shell <<'PY'
-from operations.models import (CustomerProjection, InboxEvent, InventoryProjection,
-    OperationOrder, OperationOrderItem, SnapshotExpectation)
-for M in (OperationOrderItem, OperationOrder, InventoryProjection, CustomerProjection, InboxEvent, SnapshotExpectation):
-    M.objects.all().delete()
-print("operations read side cleared")
-PY
+cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 
-echo "== declare storefront 'orders' exchange and rebind bridge =="
-exec_be python manage.py shell <<'PY'
+wait_for() {  # wait_for <label> <cmd...>
+  local label="$1"; shift
+  for _ in $(seq 1 60); do "$@" >/dev/null 2>&1 && { echo "ready: $label"; return 0; }; sleep 2; done
+  echo "timeout waiting for: $label" >&2; return 1
+}
+
+echo "== bring up isolated stack =="
+dc up -d db redis rabbitmq operations-db operations-api operations-consumer operations-bridge backend >/dev/null
+wait_for rabbitmq dc exec -T rabbitmq rabbitmq-diagnostics -q ping
+wait_for backend-migrated be python manage.py migrate --check
+wait_for operations-migrated ops python manage.py migrate --check
+
+echo "== declare storefront 'orders' exchange, then rebind bridge =="
+be python manage.py shell <<'PY'
 from orders import messaging
-ch = messaging.connect().channel()
-messaging.declare_topology(ch)
+messaging.declare_topology(messaging.connect().channel())
 print("orders topology declared")
 PY
 dc restart operations-bridge >/dev/null
-sleep 5
+wait_for bridge-bound bridge_ready
 
 echo "== seed source models (product, customer, order) =="
-exec_be python manage.py shell <<'PY'
+be python manage.py shell <<'PY'
 from decimal import Decimal
 from django.contrib.auth import get_user_model
 from menu.models import Product
 from orders.models import DeliveryAddress, Order, OrderItem, OrderStatusHistory
 
 User = get_user_model()
-old = User.objects.filter(username="+79995550000").first()
-if old:
-    Order.objects.filter(user=old).delete()          # cascades items + history
-    DeliveryAddress.objects.filter(user=old).delete()
-    old.delete()
-Product.objects.filter(code="e2e_dish").delete()
-
 p = Product.objects.create(code="e2e_dish", category="dish", name="E2E Рамен",
                            price=Decimal("50.00"), stock_quantity=10, version=1)
 u = User.objects.create_user(username="+79995550000", phone="+79995550000",
@@ -62,10 +65,10 @@ print(f"seeded product={p.code} user={u.id} order={o.id}")
 PY
 
 echo "== emit live state + snapshots, then relay through the outbox =="
-exec_be python manage.py emit_source_state
-exec_be python manage.py emit_source_state --snapshot
-for _ in 1 2 3 4 5; do exec_be python manage.py publish_outbox; done
-sleep 6
+be python manage.py emit_source_state
+be python manage.py emit_source_state --snapshot
+for _ in 1 2 3 4 5; do be python manage.py publish_outbox; done
 
-echo "== reconcile (expect unexplained=0) =="
-exec_ops python manage.py reconcile
+echo "== wait for projections, then reconcile (expect unexplained=0) =="
+wait_for order-projected order_projected
+ops python manage.py reconcile

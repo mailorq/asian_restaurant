@@ -1,0 +1,9 @@
+services:
+  # the E2E project reaches everything over the internal network via `exec`, so it
+  # publishes no host ports and can run alongside the shared dev stack
+  rabbitmq:
+    ports: !override []
+  backend:
+    ports: !override []
+  operations-api:
+    ports: !override []
