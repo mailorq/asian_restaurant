@@ -1,10 +1,12 @@
 import logging
 
 from django.db import transaction
+from django.utils import timezone
 from event_contracts import (
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
+    EVENT_SNAPSHOT_CONTROL,
     EVENT_STOCK_CHANGED,
     Envelope,
 )
@@ -17,6 +19,7 @@ from operations.models import (
     OperationOrder,
     OperationOrderItem,
     SnapshotExpectation,
+    SnapshotRun,
 )
 
 log = logging.getLogger(__name__)
@@ -48,6 +51,10 @@ def apply(envelope: Envelope, data) -> bool:
     if not created:
         projection_events.labels(envelope.event_type, "idempotent").inc()
         return False
+
+    if envelope.event_type == EVENT_SNAPSHOT_CONTROL:
+        _handle_control(envelope, data)
+        return True
 
     if envelope.snapshot:
         _record_expectation(envelope, data)
@@ -160,17 +167,22 @@ def _recount_customer(customer_id: int) -> None:
 
 
 def _record_expectation(envelope: Envelope, data) -> None:
-    # snapshots reconcile expected state; a newer snapshot wins, an older one is ignored,
-    # and a repeat is an idempotent upsert — never a version conflict
-    existing = SnapshotExpectation.objects.select_for_update().filter(
-        aggregate_type=envelope.aggregate.type, aggregate_id=envelope.aggregate.id
-    ).first()
-    if existing and existing.aggregate_version > envelope.aggregate.version:
-        projection_events.labels(envelope.event_type, "snapshot_stale").inc()
-        return
+    # one expectation per (run, aggregate); a repeated delivery is an idempotent upsert
     SnapshotExpectation.objects.update_or_create(
+        snapshot_run_id=envelope.snapshot_run_id or "",
         aggregate_type=envelope.aggregate.type,
         aggregate_id=envelope.aggregate.id,
         defaults={"aggregate_version": envelope.aggregate.version, "payload": data.model_dump(mode="json")},
     )
     projection_events.labels(envelope.event_type, "snapshot").inc()
+
+
+def _handle_control(envelope: Envelope, data) -> None:
+    if data.phase == "started":
+        SnapshotRun.objects.update_or_create(run_id=data.run_id, defaults={"status": "started"})
+    else:
+        SnapshotRun.objects.update_or_create(
+            run_id=data.run_id,
+            defaults={"status": "completed", "expected_counts": dict(data.counts), "completed_at": timezone.now()},
+        )
+    projection_events.labels(envelope.event_type, "control").inc()

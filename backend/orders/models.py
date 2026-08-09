@@ -25,6 +25,7 @@ class OrderOutbox(models.Model):
     schema_version = models.PositiveSmallIntegerField(default=1)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
     snapshot = models.BooleanField(default=False)
+    snapshot_run_id = models.CharField(max_length=64, blank=True)
     payload = models.JSONField()
     status = models.CharField(
         max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True

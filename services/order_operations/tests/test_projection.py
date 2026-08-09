@@ -48,6 +48,7 @@ def _created(order_id=1, version=1, customer_id=7, status="created", items=None,
             "status": status,
             "total": total,
             "recipient_name": "Иван",
+            "payment_method": "cash",
             "items": items,
         },
     }
