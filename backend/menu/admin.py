@@ -22,8 +22,11 @@ class ProductAdmin(admin.ModelAdmin):
             super().save_model(request, obj, form, change)
             inventory.set_stock(obj.pk, new_quantity, reason="admin edit", staff=request.user)
             obj.refresh_from_db()
-        else:
-            super().save_model(request, obj, form, change)
+            return
+        super().save_model(request, obj, form, change)
+        if not change:
+            # a new product must reach operations as a live event, not only via bootstrap
+            inventory.emit_state(obj)
 
 
 @admin.register(Ingredient)

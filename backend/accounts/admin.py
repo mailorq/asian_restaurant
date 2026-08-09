@@ -25,5 +25,8 @@ class CustomUserAdmin(UserAdmin):
             super().save_model(request, obj, form, change)
             accounts_service.set_customer_profile(obj.pk, name=new_name, phone=new_phone)
             obj.refresh_from_db()
-        else:
-            super().save_model(request, obj, form, change)
+            return
+        super().save_model(request, obj, form, change)
+        if not change:
+            # a new customer must reach operations as a live event, not only via bootstrap
+            accounts_service.emit_state(obj)
