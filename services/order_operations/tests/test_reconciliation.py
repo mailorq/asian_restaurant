@@ -16,7 +16,11 @@ from operations.reconciliation import reconcile
 pytestmark = pytest.mark.django_db
 
 
-def _order_created(order_id=1, version=1, status="created", total="100.00", snapshot=False):
+def _order_created(order_id=1, version=1, status="created", total="100.00", snapshot=False,
+                   address="ул. 1", items=None):
+    if items is None:
+        items = [{"source_product_id": 1, "product_code": "dish_1", "name": "Рамен",
+                  "quantity": 2, "unit_price": "50.00", "line_total": "100.00"}]
     raw = {
         "event_id": str(uuid.uuid4()),
         "event_type": EVENT_ORDER_CREATED,
@@ -28,9 +32,8 @@ def _order_created(order_id=1, version=1, status="created", total="100.00", snap
         "correlation_id": str(uuid.uuid4()),
         "data": {
             "order_id": order_id, "customer_id": 5, "status": status, "total": total,
-            "recipient_name": "Иван", "phone": "+380", "address": "ул. 1", "address_verified": False,
-            "items": [{"source_product_id": 1, "product_code": "dish_1", "name": "Рамен",
-                       "quantity": 2, "unit_price": "50.00", "line_total": "100.00"}],
+            "recipient_name": "Иван", "phone": "+380", "address": address, "address_verified": False,
+            "payment_method": "cash", "items": items,
         },
     }
     return parse_event(raw)
@@ -158,3 +161,23 @@ def test_order_repeated_snapshot_is_idempotent():
         projection.apply(*_order_created(order_id=103, version=1, status="created", snapshot=True))
     assert SnapshotExpectation.objects.filter(aggregate_type="order", aggregate_id="103").count() == 1
     assert reconcile()["unexplained"] == 0
+
+
+def test_order_address_mismatch_is_reported():
+    projection.apply(*_order_created(order_id=104, version=1, address="ул. 1"))
+    projection.apply(*_order_created(order_id=104, version=1, address="ул. 99", snapshot=True))
+    report = reconcile()
+    assert report["unexplained"] == 1
+    d = report["discrepancies"][0]
+    assert d["kind"] == "field_mismatch" and "address" in d["diffs"]
+
+
+def test_order_item_quantity_and_price_mismatch_is_reported():
+    projection.apply(*_order_created(order_id=105, version=1))  # qty 2, total 100
+    bigger = [{"source_product_id": 1, "product_code": "dish_1", "name": "Рамен",
+               "quantity": 3, "unit_price": "50.00", "line_total": "150.00"}]
+    projection.apply(*_order_created(order_id=105, version=1, total="150.00", items=bigger, snapshot=True))
+    report = reconcile()
+    assert report["unexplained"] == 1
+    d = report["discrepancies"][0]
+    assert d["kind"] == "field_mismatch" and "items" in d["diffs"] and "total" in d["diffs"]

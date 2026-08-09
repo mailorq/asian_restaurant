@@ -21,6 +21,7 @@ class OpsOrderOut(Schema):
     phone: str
     address: str
     address_verified: bool
+    payment_method: str
 
 
 @api.get("/health", response=HealthOut, tags=["ops"])

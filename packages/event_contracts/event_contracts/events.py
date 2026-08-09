@@ -59,6 +59,7 @@ class OrderCreatedData(BaseModel):
     phone: str = ""
     address: str = ""
     address_verified: bool = False
+    payment_method: str = ""
     items: list[OrderItemData] = Field(min_length=1)
 
     @model_validator(mode="after")

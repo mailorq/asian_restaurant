@@ -13,6 +13,7 @@ class OperationOrder(models.Model):
     phone = models.CharField(max_length=32, blank=True)
     address = models.CharField(max_length=500, blank=True)
     address_verified = models.BooleanField(default=False)
+    payment_method = models.CharField(max_length=8, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

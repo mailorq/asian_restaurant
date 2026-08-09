@@ -96,6 +96,7 @@ def _order_created(envelope: Envelope, data) -> None:
             "phone": data.phone,
             "address": data.address,
             "address_verified": data.address_verified,
+            "payment_method": data.payment_method,
         },
     )
     order.items.all().delete()
