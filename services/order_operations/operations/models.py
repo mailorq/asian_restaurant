@@ -24,7 +24,19 @@ class OperationOrder(models.Model):
         return f"OperationOrder<{self.source_order_id}> ({self.status})"
 
 
+class SnapshotRun(models.Model):
+    run_id = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=12, default="started")
+    expected_counts = models.JSONField(default=dict)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"run<{self.run_id}> {self.status}"
+
+
 class SnapshotExpectation(models.Model):
+    snapshot_run_id = models.CharField(max_length=64, db_index=True)
     aggregate_type = models.CharField(max_length=16)
     aggregate_id = models.CharField(max_length=64)
     aggregate_version = models.PositiveIntegerField(default=0)
@@ -33,7 +45,9 @@ class SnapshotExpectation(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["aggregate_type", "aggregate_id"], name="uniq_snapshot_aggregate"),
+            models.UniqueConstraint(
+                fields=["snapshot_run_id", "aggregate_type", "aggregate_id"], name="uniq_snapshot_aggregate"
+            ),
         ]
 
     def __str__(self) -> str:

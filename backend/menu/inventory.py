@@ -6,13 +6,14 @@ from orders.models import OrderOutbox
 STOCK_EVENT = "inventory.stock_changed"
 
 
-def _emit(product: Product, *, snapshot: bool = False) -> None:
+def _emit(product: Product, *, snapshot: bool = False, run_id: str = "") -> None:
     OrderOutbox.objects.create(
         aggregate_id=product.code,
         aggregate_version=product.version,
         event_type=STOCK_EVENT,
         routing_key=STOCK_EVENT,
         snapshot=snapshot,
+        snapshot_run_id=run_id,
         payload={"product_code": product.code, "name": product.name, "stock_quantity": product.stock_quantity},
     )
 
@@ -40,7 +41,7 @@ def set_stock(product_id: int, new_quantity: int, *, reason: str, staff=None) ->
     return product
 
 
-def emit_state(product: Product, *, snapshot: bool = False) -> None:
+def emit_state(product: Product, *, snapshot: bool = False, run_id: str = "") -> None:
     # re-emit current state at the current version: live seeds a projection, snapshot
     # records a reconciliation expectation
-    _emit(product, snapshot=snapshot)
+    _emit(product, snapshot=snapshot, run_id=run_id)

@@ -6,13 +6,14 @@ from orders.models import OrderOutbox
 CUSTOMER_EVENT = "identity.customer_changed"
 
 
-def _emit(user: User, *, snapshot: bool = False) -> None:
+def _emit(user: User, *, snapshot: bool = False, run_id: str = "") -> None:
     OrderOutbox.objects.create(
         aggregate_id=str(user.id),
         aggregate_version=user.customer_version,
         event_type=CUSTOMER_EVENT,
         routing_key=CUSTOMER_EVENT,
         snapshot=snapshot,
+        snapshot_run_id=run_id,
         payload={"customer_id": user.id, "name": user.first_name or "", "phone": user.phone or ""},
     )
 
@@ -41,5 +42,5 @@ def set_customer_profile(user_id: int, *, name: str | None = None, phone: str | 
     return user
 
 
-def emit_state(user: User, *, snapshot: bool = False) -> None:
-    _emit(user, snapshot=snapshot)
+def emit_state(user: User, *, snapshot: bool = False, run_id: str = "") -> None:
+    _emit(user, snapshot=snapshot, run_id=run_id)
