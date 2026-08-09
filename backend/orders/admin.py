@@ -92,9 +92,14 @@ class OrderAdmin(admin.ModelAdmin):
         # orders exist only as a result of checkout
         return False
 
+    def has_delete_permission(self, request, obj=None):
+        # a deleted order would silently diverge from operations (no event, no history)
+        return False
+
 
 @admin.register(DeliveryAddress)
-class DeliveryAddressAdmin(admin.ModelAdmin):
+class DeliveryAddressAdmin(_AuditOnly):
+    # delivery addresses are an order's immutable snapshot of where it ships
     list_display = ("id", "user", "address", "is_verified", "created_at")
     list_filter = ("is_verified", "provider")
     search_fields = ("address", "user__username")

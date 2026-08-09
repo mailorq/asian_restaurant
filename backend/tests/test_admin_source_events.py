@@ -10,7 +10,7 @@ from accounts.admin import CustomUserAdmin
 from accounts.models import User
 from menu.admin import ProductAdmin, StockAdjustmentAdmin
 from menu.models import Product, StockAdjustment
-from orders.admin import OrderAdmin, _make_transition_action
+from orders.admin import DeliveryAddressAdmin, OrderAdmin, _make_transition_action
 from orders.models import DeliveryAddress, Order, OrderItem, OrderOutbox, OrderStatusHistory
 
 pytestmark = pytest.mark.django_db
@@ -96,11 +96,25 @@ def test_admin_created_user_emits_live_event():
     assert OrderOutbox.objects.filter(event_type="identity.customer_changed", aggregate_id=str(u.id)).exists()
 
 
-def test_order_admin_is_view_only():
+def test_order_admin_is_view_only_and_undeletable():
     ma = OrderAdmin(Order, dj_admin.site)
     assert ma.has_add_permission(_req(None)) is False
+    assert ma.has_delete_permission(_req(None)) is False
     for field in ("status", "total", "contact_name", "phone", "delivery_address"):
         assert field in ma.readonly_fields
+
+
+def test_delivery_address_admin_is_immutable():
+    ma = DeliveryAddressAdmin(DeliveryAddress, dj_admin.site)
+    req = _req(None)
+    assert ma.has_add_permission(req) is False
+    assert ma.has_change_permission(req) is False
+    assert ma.has_delete_permission(req) is False
+
+
+def test_product_and_user_admin_forbid_hard_delete():
+    assert ProductAdmin(Product, dj_admin.site).has_delete_permission(_req(None)) is False
+    assert CustomUserAdmin(User, dj_admin.site).has_delete_permission(_req(None)) is False
 
 
 def test_order_admin_transition_action_routes_through_service(user, make_product, employee_user):

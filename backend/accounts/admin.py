@@ -30,3 +30,7 @@ class CustomUserAdmin(UserAdmin):
         if not change:
             # a new customer must reach operations as a live event, not only via bootstrap
             accounts_service.emit_state(obj)
+
+    def has_delete_permission(self, request, obj=None):
+        # hard delete would leave an obsolete projection with no deletion event; deactivate instead
+        return False

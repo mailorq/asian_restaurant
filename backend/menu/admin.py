@@ -28,6 +28,10 @@ class ProductAdmin(admin.ModelAdmin):
             # a new product must reach operations as a live event, not only via bootstrap
             inventory.emit_state(obj)
 
+    def has_delete_permission(self, request, obj=None):
+        # hard delete would leave an obsolete projection with no deletion event; deactivate instead
+        return False
+
 
 @admin.register(Ingredient)
 class IngredientAdmin(admin.ModelAdmin):
