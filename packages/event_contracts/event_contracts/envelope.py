@@ -35,6 +35,8 @@ class Envelope(BaseModel):
     # a snapshot re-states current aggregate state for reconciliation; consumers must
     # treat it as an upsert of expected state, not as a new version-fenced change
     snapshot: bool = False
+    # ties a snapshot event (and its control events) to one reconciliation run
+    snapshot_run_id: str | None = None
     data: dict[str, Any]
 
     @field_validator("occurred_at")

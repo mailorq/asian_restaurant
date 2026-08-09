@@ -10,6 +10,7 @@ EVENT_ORDER_CREATED = "orders.order.created.v1"
 EVENT_ORDER_STATUS_CHANGED = "orders.order.status_changed.v1"
 EVENT_STOCK_CHANGED = "inventory.stock_changed.v1"
 EVENT_CUSTOMER_CHANGED = "identity.customer_changed.v1"
+EVENT_SNAPSHOT_CONTROL = "operations.snapshot.control.v1"
 
 # width matches the storefront DecimalField(max_digits=10, decimal_places=2); a value the
 # contract accepts must fit the DB, otherwise the projection write would fail downstream
@@ -31,6 +32,16 @@ class OrderStatus(StrEnum):
     delivering = "delivering"
     delivered = "delivered"
     cancelled = "cancelled"
+
+
+class PaymentMethod(StrEnum):
+    cash = "cash"
+    card = "card"
+
+
+class SnapshotPhase(StrEnum):
+    started = "started"
+    completed = "completed"
 
 
 class OrderItemData(BaseModel):
@@ -59,7 +70,7 @@ class OrderCreatedData(BaseModel):
     phone: str = ""
     address: str = ""
     address_verified: bool = False
-    payment_method: str = ""
+    payment_method: PaymentMethod
     items: list[OrderItemData] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -90,11 +101,20 @@ class CustomerChangedData(BaseModel):
     phone: str = ""
 
 
+class SnapshotControlData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    run_id: str = Field(min_length=1)
+    phase: SnapshotPhase
+    # per aggregate_type expected counts, present on the completed control event
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
 _REGISTRY: dict[str, type[BaseModel]] = {
     EVENT_ORDER_CREATED: OrderCreatedData,
     EVENT_ORDER_STATUS_CHANGED: OrderStatusChangedData,
     EVENT_STOCK_CHANGED: StockChangedData,
     EVENT_CUSTOMER_CHANGED: CustomerChangedData,
+    EVENT_SNAPSHOT_CONTROL: SnapshotControlData,
 }
 
 _AGGREGATE: dict[str, tuple[str, str]] = {
@@ -102,6 +122,7 @@ _AGGREGATE: dict[str, tuple[str, str]] = {
     EVENT_ORDER_STATUS_CHANGED: ("order", "order_id"),
     EVENT_STOCK_CHANGED: ("product", "product_code"),
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
+    EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
 }
 
 

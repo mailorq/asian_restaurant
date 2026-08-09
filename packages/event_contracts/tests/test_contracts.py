@@ -29,6 +29,7 @@ def _envelope(**override) -> dict:
             "customer_id": 5,
             "status": "created",
             "total": "100.00",
+            "payment_method": "cash",
             "items": [
                 {
                     "source_product_id": 7,
@@ -168,6 +169,22 @@ def test_line_total_must_equal_unit_price_times_quantity():
     payload["data"]["total"] = "99.99"
     with pytest.raises(ValidationError):
         parse_event(payload)
+
+
+def test_payment_method_is_required_and_constrained():
+    payload = _envelope()
+    del payload["data"]["payment_method"]
+    with pytest.raises(ValidationError):
+        parse_event(payload)
+    with pytest.raises(ValidationError):
+        parse_event(_envelope(data={**_envelope()["data"], "payment_method": "bitcoin"}))
+
+
+def test_payment_method_card_accepted():
+    payload = _envelope()
+    payload["data"]["payment_method"] = "card"
+    _e, data = parse_event(payload)
+    assert data.payment_method == "card"
 
 
 def test_total_must_equal_sum_of_line_totals():
