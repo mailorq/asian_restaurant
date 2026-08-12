@@ -11,17 +11,17 @@
 
 ## Архитектура
 
-- **Меню** (`menu`) — каталог, остатки (`stock_quantity`), журнал изменений
+- **Меню** (`menu`) - каталог, остатки (`stock_quantity`), журнал изменений
   остатков (`StockAdjustment`).
-- **Корзина** (`cart`) — серверная, в Redis. Атомарные операции через Lua
+- **Корзина** (`cart`) - серверная, в Redis. Атомарные операции через Lua
   (compare-and-set по версии), гостевая корзина по signed-cookie, слияние в
   пользовательскую при входе, сверка со стоком, fail-closed `503` при недоступности
   Redis.
-- **Заказы** (`orders`) — checkout только для авторизованных: телефон из аккаунта,
+- **Заказы** (`orders`) - checkout только для авторизованных: телефон из аккаунта,
   идемпотентность (`idempotency_key` и `(cart, version)`), `select_for_update` по
   остаткам, серверная проверка адреса (геокодер с кешем), запись заказа и
   transactional outbox в одной транзакции, стейт-машина статусов.
-- **Сотрудник** (`employee`) — управление заказами, инвентарём и пользователями;
+- **Сотрудник** (`employee`) - управление заказами, инвентарём и пользователями;
   доступ только для суперпользователя или группы `restaurant_employee`.
 
 Публикация событий заказа в RabbitMQ идёт через transactional outbox
@@ -51,7 +51,7 @@ docker compose exec backend python manage.py grant_employee <телефон>
 
 ## Переменные окружения
 
-Полный список — в [.env.example](.env.example). Ключевые:
+Полный список - в [.env.example](.env.example). Ключевые:
 
 | Переменная | Назначение |
 |---|---|
@@ -110,6 +110,6 @@ frontend/
 
 ## Релиз
 
-Порядок деплоя и обязательный шаг `seed_menu` — в [DEPLOY.md](DEPLOY.md).
+Порядок деплоя и обязательный шаг `seed_menu` - в [DEPLOY.md](DEPLOY.md).
 
-### - [mailor](https://github.com/mailorq) — fullstack dev
+#### - [mailor](https://github.com/mailorq) - fullstack dev
