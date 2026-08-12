@@ -127,6 +127,7 @@ def _map_data(event_type: str, legacy: dict) -> dict:
         return {
             "run_id": legacy["run_id"],
             "phase": legacy.get("phase", ""),
+            "as_of": legacy.get("as_of"),
             "counts": legacy.get("counts", {}),
         }
     return {

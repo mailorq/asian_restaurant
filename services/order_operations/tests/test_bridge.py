@@ -64,6 +64,8 @@ def _legacy_stock(snapshot=False):
     body = json.dumps({"product_code": "dish_3", "name": "Рамен", "stock_quantity": 12}).encode()
     headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()),
                "aggregate_version": 4, "occurred_at": OCCURRED_AT, "snapshot": snapshot}
+    if snapshot:
+        headers["snapshot_run_id"] = "run1"
     props = SimpleNamespace(type="inventory.stock_changed", message_id=str(uuid.uuid4()),
                             correlation_id=str(uuid.uuid4()), content_type="application/json", headers=headers)
     method = SimpleNamespace(delivery_tag=1, routing_key="inventory.stock_changed")
@@ -71,7 +73,8 @@ def _legacy_stock(snapshot=False):
 
 
 def _legacy_control(phase="completed", run_id="run1", counts=None):
-    body = json.dumps({"run_id": run_id, "phase": phase, "counts": counts or {"product": 1}}).encode()
+    body = json.dumps({"run_id": run_id, "phase": phase, "as_of": OCCURRED_AT,
+                       "counts": counts or {"product": 1}}).encode()
     headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()),
                "aggregate_version": 1, "occurred_at": OCCURRED_AT, "snapshot_run_id": run_id}
     props = SimpleNamespace(type="snapshot.control", message_id=str(uuid.uuid4()),

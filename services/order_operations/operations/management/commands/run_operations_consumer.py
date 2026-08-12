@@ -67,6 +67,11 @@ class Command(BaseCommand):
             projection_events.labels(envelope.event_type, "conflict").inc()
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
+        except projection.SnapshotProtocolError:
+            log.warning("operations snapshot protocol violation -> DLQ")
+            projection_events.labels(envelope.event_type, "snapshot_protocol").inc()
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
         except projection.OutOfOrder:
             projection_events.labels(envelope.event_type, "out_of_order").inc()
             self._retry(channel, method, properties, body, retries)

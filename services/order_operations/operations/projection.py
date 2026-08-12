@@ -31,6 +31,10 @@ class OutOfOrder(Exception):
     """A status_changed arrived before its order.created — retry it later."""
 
 
+class SnapshotProtocolError(Exception):
+    """A snapshot control event violated the started -> completed run protocol."""
+
+
 class ProjectionConflict(Exception):
 
     def __init__(self, aggregate: str, aggregate_id, version: int, event_id) -> None:
@@ -104,6 +108,7 @@ def _order_created(envelope: Envelope, data) -> None:
             "address": data.address,
             "address_verified": data.address_verified,
             "payment_method": data.payment_method,
+            "source_event_at": envelope.occurred_at,
         },
     )
     order.items.all().delete()
@@ -130,7 +135,8 @@ def _order_status_changed(envelope: Envelope, data) -> None:
         return
     order.status = data.status
     order.aggregate_version = envelope.aggregate.version
-    order.save(update_fields=["status", "aggregate_version", "updated_at"])
+    order.source_event_at = envelope.occurred_at
+    order.save(update_fields=["status", "aggregate_version", "source_event_at", "updated_at"])
     _recount_customer(order.customer_id)
     projection_events.labels(envelope.event_type, "applied").inc()
 
@@ -142,7 +148,7 @@ def _stock_changed(envelope: Envelope, data) -> None:
     InventoryProjection.objects.update_or_create(
         product_code=data.product_code,
         defaults={"name": data.name, "stock_quantity": data.stock_quantity,
-                  "aggregate_version": envelope.aggregate.version},
+                  "aggregate_version": envelope.aggregate.version, "source_event_at": envelope.occurred_at},
     )
     projection_events.labels(envelope.event_type, "applied").inc()
 
@@ -154,7 +160,7 @@ def _customer_changed(envelope: Envelope, data) -> None:
     CustomerProjection.objects.update_or_create(
         source_customer_id=data.customer_id,
         defaults={"name": data.name, "phone": data.phone,
-                  "aggregate_version": envelope.aggregate.version},
+                  "aggregate_version": envelope.aggregate.version, "source_event_at": envelope.occurred_at},
     )
     projection_events.labels(envelope.event_type, "applied").inc()
 
@@ -178,11 +184,21 @@ def _record_expectation(envelope: Envelope, data) -> None:
 
 
 def _handle_control(envelope: Envelope, data) -> None:
+    run = SnapshotRun.objects.select_for_update().filter(run_id=data.run_id).first()
     if data.phase == "started":
-        SnapshotRun.objects.update_or_create(run_id=data.run_id, defaults={"status": "started"})
-    else:
+        # only a fresh or still-open run may (re)start; a completed run is immutable
+        if run is not None and run.status == "completed":
+            raise SnapshotProtocolError(f"run {data.run_id} already completed")
         SnapshotRun.objects.update_or_create(
-            run_id=data.run_id,
-            defaults={"status": "completed", "expected_counts": dict(data.counts), "completed_at": timezone.now()},
+            run_id=data.run_id, defaults={"status": "started", "as_of": data.as_of}
         )
+    else:
+        # completed must follow a started run exactly once — it never creates a run itself
+        if run is None or run.status != "started":
+            raise SnapshotProtocolError(f"completed without an open started run: {data.run_id}")
+        run.status = "completed"
+        run.expected_counts = dict(data.counts)
+        run.as_of = data.as_of
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "expected_counts", "as_of", "completed_at"])
     projection_events.labels(envelope.event_type, "control").inc()

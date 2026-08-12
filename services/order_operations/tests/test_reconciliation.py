@@ -12,18 +12,23 @@ from event_contracts import (
 )
 
 from operations import projection
-from operations.models import OperationOrder, SnapshotExpectation
+from operations.models import InventoryProjection, OperationOrder, SnapshotExpectation
 from operations.reconciliation import reconcile
 
 pytestmark = pytest.mark.django_db
 
+# a fixed source boundary with events on either side of it
+BEFORE = "2020-06-01T00:00:00+00:00"
+AS_OF = "2020-06-02T00:00:00+00:00"
+AFTER = "2020-06-03T00:00:00+00:00"
 
-def _base(event_type, agg_type, agg_id, version, data, snapshot=False, run_id=""):
+
+def _base(event_type, agg_type, agg_id, version, data, snapshot=False, run_id="", occurred_at=None):
     return parse_event({
         "event_id": str(uuid.uuid4()),
         "event_type": event_type,
         "schema_version": 1,
-        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "occurred_at": occurred_at or dt.datetime.now(dt.UTC).isoformat(),
         "producer": "storefront",
         "snapshot": snapshot,
         "snapshot_run_id": run_id or None,
@@ -33,25 +38,25 @@ def _base(event_type, agg_type, agg_id, version, data, snapshot=False, run_id=""
     })
 
 
-def _stock(code="dish_1", version=1, stock=10, snapshot=False, run_id=""):
+def _stock(code="dish_1", version=1, stock=10, name="Рамен", snapshot=False, run_id="", occurred_at=None):
     return _base(EVENT_STOCK_CHANGED, "product", code, version,
-                 {"product_code": code, "name": "Рамен", "stock_quantity": stock}, snapshot, run_id)
+                 {"product_code": code, "name": name, "stock_quantity": stock}, snapshot, run_id, occurred_at)
 
 
-def _customer(cid=7, version=1, name="Иван", snapshot=False, run_id=""):
+def _customer(cid=7, version=1, name="Иван", snapshot=False, run_id="", occurred_at=None):
     return _base(EVENT_CUSTOMER_CHANGED, "customer", cid, version,
-                 {"customer_id": cid, "name": name, "phone": "+380"}, snapshot, run_id)
+                 {"customer_id": cid, "name": name, "phone": "+380"}, snapshot, run_id, occurred_at)
 
 
 def _order(order_id=1, version=1, status="created", total="100.00", address="ул. 1",
-           payment_method="cash", items=None, snapshot=False, run_id=""):
+           payment_method="cash", items=None, snapshot=False, run_id="", occurred_at=None):
     if items is None:
         items = [{"source_product_id": 1, "product_code": "dish_1", "name": "Рамен",
                   "quantity": 2, "unit_price": "50.00", "line_total": "100.00"}]
     return _base(EVENT_ORDER_CREATED, "order", order_id, version,
                  {"order_id": order_id, "customer_id": 5, "status": status, "total": total,
                   "recipient_name": "Иван", "phone": "+380", "address": address, "address_verified": False,
-                  "payment_method": payment_method, "items": items}, snapshot, run_id)
+                  "payment_method": payment_method, "items": items}, snapshot, run_id, occurred_at)
 
 
 def _order_status(order_id=1, version=2, status="confirmed"):
@@ -59,16 +64,16 @@ def _order_status(order_id=1, version=2, status="confirmed"):
                  {"order_id": order_id, "status": status, "from_status": "created"})
 
 
-def _control(run_id, phase, counts=None):
+def _control(run_id, phase, as_of=AS_OF, counts=None):
     return _base(EVENT_SNAPSHOT_CONTROL, "snapshot", run_id, 1,
-                 {"run_id": run_id, "phase": phase, "counts": counts or {}})
+                 {"run_id": run_id, "phase": phase, "as_of": as_of, "counts": counts or {}}, run_id=run_id)
 
 
-def _completed_run(run_id, snapshots, counts):
-    projection.apply(*_control(run_id, "started"))
+def _completed_run(run_id, snapshots, counts, as_of=AS_OF):
+    projection.apply(*_control(run_id, "started", as_of))
     for pair in snapshots:
         projection.apply(*pair)
-    projection.apply(*_control(run_id, "completed", counts))
+    projection.apply(*_control(run_id, "completed", as_of, counts))
 
 
 def test_no_completed_run_is_not_ok():
@@ -130,8 +135,9 @@ def test_incomplete_run_manifest_mismatch():
 
 
 def test_deleted_source_aggregate_flagged_as_extra_projection():
-    projection.apply(*_stock(code="p1", version=1, stock=10))
-    projection.apply(*_stock(code="p2", version=1, stock=5))  # source later removed p2
+    # p2 existed before the boundary but is absent from the completed snapshot -> obsolete
+    projection.apply(*_stock(code="p1", version=1, stock=10, occurred_at=BEFORE))
+    projection.apply(*_stock(code="p2", version=1, stock=5, occurred_at=BEFORE))
     run = "run-deleted"
     _completed_run(run, [_stock(code="p1", version=1, stock=10, snapshot=True, run_id=run)],
                    {"product": 1})
@@ -139,6 +145,46 @@ def test_deleted_source_aggregate_flagged_as_extra_projection():
     assert report["status"] == "discrepancies" and report["unexplained"] == 1
     d = report["discrepancies"][0]
     assert d["kind"] == "extra_projection" and d["aggregate_id"] == "p2"
+
+
+def test_aggregate_created_after_boundary_is_not_extra():
+    projection.apply(*_stock(code="p1", version=1, stock=10, occurred_at=BEFORE))
+    projection.apply(*_stock(code="p2", version=1, stock=5, occurred_at=AFTER))  # created after snapshot
+    run = "run-postboundary"
+    _completed_run(run, [_stock(code="p1", version=1, stock=10, snapshot=True, run_id=run)],
+                   {"product": 1})
+    assert reconcile()["status"] == "ok"
+
+
+def test_update_after_boundary_is_no_false_mismatch():
+    projection.apply(*_stock(code="p1", version=1, stock=10, occurred_at=BEFORE))
+    run = "run-update-after"
+    _completed_run(run, [_stock(code="p1", version=1, stock=10, snapshot=True, run_id=run)],
+                   {"product": 1})
+    projection.apply(*_stock(code="p1", version=2, stock=5, occurred_at=AFTER))  # newer than the snapshot
+    assert reconcile()["status"] == "ok"
+
+
+def test_product_rename_reconciles_healthy():
+    projection.apply(*_stock(code="p1", version=1, stock=10, name="Рамен", occurred_at=BEFORE))
+    projection.apply(*_stock(code="p1", version=2, stock=10, name="Рамен Делюкс"))  # rename bumps version
+    assert InventoryProjection.objects.get(product_code="p1").name == "Рамен Делюкс"
+    run = "run-rename"
+    _completed_run(run, [_stock(code="p1", version=2, stock=10, name="Рамен Делюкс", snapshot=True, run_id=run)],
+                   {"product": 1})
+    assert reconcile()["status"] == "ok"
+
+
+def test_completed_without_started_is_quarantined():
+    with pytest.raises(projection.SnapshotProtocolError):
+        projection.apply(*_control("run-orphan", "completed", counts={"product": 0}))
+
+
+def test_duplicate_completed_is_quarantined():
+    projection.apply(*_control("run-dup", "started"))
+    projection.apply(*_control("run-dup", "completed", counts={"product": 0}))
+    with pytest.raises(projection.SnapshotProtocolError):
+        projection.apply(*_control("run-dup", "completed", counts={"product": 0}))
 
 
 def test_missing_source_aggregate_in_operations():

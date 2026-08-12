@@ -37,8 +37,8 @@ def _check(exp: SnapshotExpectation) -> dict | None:
         if p is None:
             return _missing(exp)
         return _compare(exp, p.aggregate_version,
-                        {"stock_quantity": p.stock_quantity},
-                        {"stock_quantity": exp.payload.get("stock_quantity")})
+                        {"stock_quantity": p.stock_quantity, "name": p.name},
+                        {"stock_quantity": exp.payload.get("stock_quantity"), "name": exp.payload.get("name")})
     if exp.aggregate_type == "customer":
         c = CustomerProjection.objects.filter(source_customer_id=int(exp.aggregate_id)).first()
         if c is None:
@@ -69,19 +69,24 @@ def _check(exp: SnapshotExpectation) -> dict | None:
     return None
 
 
-def _extra_projections(expected_keys: set) -> list:
-    # projections a completed run did not cover are obsolete (source aggregate removed)
+def _post_boundary(source_event_at, as_of) -> bool:
+    # an aggregate first seen after the run's source boundary could not be in the snapshot,
+    # so its absence is expected, not obsolete
+    return as_of is not None and source_event_at is not None and source_event_at > as_of
+
+
+def _extra_projections(expected_keys: set, as_of) -> list:
     out = []
     for p in InventoryProjection.objects.all():
-        if ("product", p.product_code) not in expected_keys:
+        if ("product", p.product_code) not in expected_keys and not _post_boundary(p.source_event_at, as_of):
             out.append({"aggregate_type": "product", "aggregate_id": p.product_code,
                         "kind": "extra_projection", "explained": False})
     for c in CustomerProjection.objects.all():
-        if ("customer", str(c.source_customer_id)) not in expected_keys:
+        if ("customer", str(c.source_customer_id)) not in expected_keys and not _post_boundary(c.source_event_at, as_of):
             out.append({"aggregate_type": "customer", "aggregate_id": str(c.source_customer_id),
                         "kind": "extra_projection", "explained": False})
     for o in OperationOrder.objects.all():
-        if ("order", str(o.source_order_id)) not in expected_keys:
+        if ("order", str(o.source_order_id)) not in expected_keys and not _post_boundary(o.source_event_at, as_of):
             out.append({"aggregate_type": "order", "aggregate_id": str(o.source_order_id),
                         "kind": "extra_projection", "explained": False})
     return out
@@ -107,7 +112,7 @@ def reconcile(run_id: str | None = None) -> dict:
 
     expected_keys = {(e.aggregate_type, e.aggregate_id) for e in exps}
     discrepancies = [d for e in exps if (d := _check(e)) is not None]
-    discrepancies += _extra_projections(expected_keys)
+    discrepancies += _extra_projections(expected_keys, run.as_of)
     unexplained = [d for d in discrepancies if not d["explained"]]
 
     if not manifest_ok:

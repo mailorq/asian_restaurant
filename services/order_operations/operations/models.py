@@ -14,6 +14,7 @@ class OperationOrder(models.Model):
     address = models.CharField(max_length=500, blank=True)
     address_verified = models.BooleanField(default=False)
     payment_method = models.CharField(max_length=8, blank=True)
+    source_event_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -28,6 +29,8 @@ class SnapshotRun(models.Model):
     run_id = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=12, default="started")
     expected_counts = models.JSONField(default=dict)
+    # source boundary the run was taken at; projections newer than this are post-boundary
+    as_of = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
@@ -72,6 +75,7 @@ class CustomerProjection(models.Model):
     phone = models.CharField(max_length=32, blank=True)
     active_orders_count = models.PositiveIntegerField(default=0)
     aggregate_version = models.PositiveIntegerField(default=0)
+    source_event_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:
@@ -79,10 +83,13 @@ class CustomerProjection(models.Model):
 
 
 class InventoryProjection(models.Model):
+    # operations owns product_code + name + stock only; price and is_active stay
+    # storefront truth and are never presented here as operational state
     product_code = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255, blank=True)
     stock_quantity = models.PositiveIntegerField(default=0)
     aggregate_version = models.PositiveIntegerField(default=0)
+    source_event_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:
