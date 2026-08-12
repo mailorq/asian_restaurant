@@ -32,13 +32,34 @@ def record_stock_change(product: Product, new_quantity: int, *, reason: str, sta
 
 
 @transaction.atomic
-def set_stock(product_id: int, new_quantity: int, *, reason: str, staff=None) -> Product | None:
+def set_product_state(product_id: int, *, name: str | None = None, stock: int | None = None,
+                      reason: str, staff=None) -> Product | None:
+    # single writer for the fields operations projects (name, stock): one version bump and
+    # one event per change so the operations product view never goes stale
     product = Product.objects.select_for_update().filter(id=product_id).first()
     if product is None:
         return None
-    if new_quantity != product.stock_quantity:
-        record_stock_change(product, new_quantity, reason=reason, staff=staff)
+    stock_changed = stock is not None and stock != product.stock_quantity
+    name_changed = name is not None and name != product.name
+    if not (stock_changed or name_changed):
+        return product
+    old_quantity = product.stock_quantity
+    if name_changed:
+        product.name = name
+    if stock_changed:
+        product.stock_quantity = stock
+    product.version += 1
+    product.save(update_fields=["name", "stock_quantity", "version"])
+    if stock_changed:
+        StockAdjustment.objects.create(
+            product=product, staff=staff, old_quantity=old_quantity, new_quantity=stock, reason=reason
+        )
+    _emit(product)
     return product
+
+
+def set_stock(product_id: int, new_quantity: int, *, reason: str, staff=None) -> Product | None:
+    return set_product_state(product_id, stock=new_quantity, reason=reason, staff=staff)
 
 
 def emit_state(product: Product, *, snapshot: bool = False, run_id: str = "") -> None:

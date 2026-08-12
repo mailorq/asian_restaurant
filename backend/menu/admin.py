@@ -14,13 +14,16 @@ class ProductAdmin(admin.ModelAdmin):
     readonly_fields = ("version",)
 
     def save_model(self, request, obj, form, change):
-        # stock must not be written directly from admin: route any change through the
-        # single writer so version bump + outbox event happen atomically
-        if change and "stock_quantity" in form.changed_data:
-            new_quantity = obj.stock_quantity
-            obj.stock_quantity = Product.objects.get(pk=obj.pk).stock_quantity
+        # name/stock are projected by operations: route edits through the single writer so
+        # a version bump + event happen atomically instead of a silent direct write
+        routed = {"name", "stock_quantity"} & set(form.changed_data)
+        if change and routed:
+            db = Product.objects.get(pk=obj.pk)
+            new_name = obj.name if "name" in routed else None
+            new_stock = obj.stock_quantity if "stock_quantity" in routed else None
+            obj.name, obj.stock_quantity = db.name, db.stock_quantity
             super().save_model(request, obj, form, change)
-            inventory.set_stock(obj.pk, new_quantity, reason="admin edit", staff=request.user)
+            inventory.set_product_state(obj.pk, name=new_name, stock=new_stock, reason="admin edit", staff=request.user)
             obj.refresh_from_db()
             return
         super().save_model(request, obj, form, change)

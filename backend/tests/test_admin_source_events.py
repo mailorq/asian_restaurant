@@ -53,15 +53,28 @@ def test_product_admin_stock_edit_routes_through_service(make_product, employee_
     assert StockAdjustment.objects.filter(product=product, reason="admin edit").exists()
 
 
-def test_product_admin_non_stock_edit_emits_nothing(make_product, employee_user):
+def test_product_admin_non_projected_edit_emits_nothing(make_product, employee_user):
     product = make_product(stock=5)
     ma = ProductAdmin(Product, dj_admin.site)
-    product.name = "Новое имя"
-    ma.save_model(_req(employee_user), product, SimpleNamespace(changed_data=["name"]), change=True)
+    product.description = "новое описание"  # not a field operations projects
+    ma.save_model(_req(employee_user), product, SimpleNamespace(changed_data=["description"]), change=True)
 
     product.refresh_from_db()
     assert product.version == 1
     assert not OrderOutbox.objects.filter(event_type="inventory.stock_changed").exists()
+
+
+def test_product_admin_rename_bumps_version_and_emits_event(make_product, employee_user):
+    product = make_product(stock=5)
+    start = product.version
+    ma = ProductAdmin(Product, dj_admin.site)
+    product.name = "Рамен Делюкс"
+    ma.save_model(_req(employee_user), product, SimpleNamespace(changed_data=["name"]), change=True)
+
+    product.refresh_from_db()
+    assert product.name == "Рамен Делюкс" and product.version == start + 1
+    row = OrderOutbox.objects.filter(event_type="inventory.stock_changed", aggregate_id=product.code).latest("created_at")
+    assert row.payload["name"] == "Рамен Делюкс"
 
 
 def test_user_admin_profile_edit_routes_through_service(user):
