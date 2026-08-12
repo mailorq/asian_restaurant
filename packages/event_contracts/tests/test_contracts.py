@@ -7,12 +7,30 @@ from pydantic import ValidationError
 
 from event_contracts import (
     EVENT_ORDER_CREATED,
+    EVENT_SNAPSHOT_CONTROL,
     ContractError,
     Envelope,
     OrderCreatedData,
     UnknownEventType,
     parse_event,
 )
+
+
+def _control_env(phase="completed", run_id="r1", envelope_run_id=None, drop_as_of=False, counts=None) -> dict:
+    payload = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": EVENT_SNAPSHOT_CONTROL,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": "storefront",
+        "snapshot_run_id": run_id if envelope_run_id is None else envelope_run_id,
+        "aggregate": {"type": "snapshot", "id": run_id, "version": 1},
+        "correlation_id": str(uuid.uuid4()),
+        "data": {"run_id": run_id, "phase": phase, "as_of": "2026-01-01T00:00:00+00:00", "counts": counts or {}},
+    }
+    if drop_as_of:
+        del payload["data"]["as_of"]
+    return payload
 
 
 def _envelope(**override) -> dict:
@@ -185,6 +203,36 @@ def test_payment_method_card_accepted():
     payload["data"]["payment_method"] = "card"
     _e, data = parse_event(payload)
     assert data.payment_method == "card"
+
+
+def test_control_valid_completed():
+    _e, data = parse_event(_control_env(counts={"product": 2, "customer": 1, "order": 3}))
+    assert data.phase == "completed" and data.counts["order"] == 3
+
+
+def test_control_run_id_must_match_envelope():
+    with pytest.raises(ContractError):
+        parse_event(_control_env(envelope_run_id="other"))
+
+
+def test_control_as_of_required():
+    with pytest.raises(ValidationError):
+        parse_event(_control_env(drop_as_of=True))
+
+
+def test_control_counts_reject_negative_and_unknown_types():
+    with pytest.raises(ValidationError):
+        parse_event(_control_env(counts={"product": -1}))
+    with pytest.raises(ValidationError):
+        parse_event(_control_env(counts={"widget": 1}))
+
+
+def test_snapshot_aggregate_requires_run_id():
+    payload = _envelope()
+    payload["snapshot"] = True
+    payload["snapshot_run_id"] = None
+    with pytest.raises(ContractError):
+        parse_event(payload)
 
 
 def test_total_must_equal_sum_of_line_totals():

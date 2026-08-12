@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
@@ -5,6 +6,8 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from event_contracts.envelope import Envelope
+
+SNAPSHOT_AGGREGATES = frozenset({"product", "customer", "order"})
 
 EVENT_ORDER_CREATED = "orders.order.created.v1"
 EVENT_ORDER_STATUS_CHANGED = "orders.order.status_changed.v1"
@@ -105,8 +108,19 @@ class SnapshotControlData(BaseModel):
     model_config = ConfigDict(extra="ignore")
     run_id: str = Field(min_length=1)
     phase: SnapshotPhase
+    # immutable source boundary: the REPEATABLE READ snapshot time the run was taken at
+    as_of: datetime
     # per aggregate_type expected counts, present on the completed control event
     counts: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_counts(self) -> "SnapshotControlData":
+        for key, value in self.counts.items():
+            if key not in SNAPSHOT_AGGREGATES:
+                raise ValueError(f"unsupported aggregate type in counts: {key}")
+            if value < 0:
+                raise ValueError("counts must be non-negative")
+        return self
 
 
 _REGISTRY: dict[str, type[BaseModel]] = {
@@ -140,4 +154,9 @@ def parse_event(raw: dict) -> tuple[Envelope, BaseModel]:
         raise ContractError(f"aggregate.type {envelope.aggregate.type!r} != {agg_type!r}")
     if envelope.aggregate.id != str(getattr(data, id_field)):
         raise ContractError("aggregate.id does not match event data")
+    if envelope.event_type == EVENT_SNAPSHOT_CONTROL:
+        if envelope.snapshot_run_id != data.run_id:
+            raise ContractError("snapshot_run_id must match control run_id")
+    elif envelope.snapshot and not envelope.snapshot_run_id:
+        raise ContractError("snapshot aggregate event requires snapshot_run_id")
     return envelope, data
