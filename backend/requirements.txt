@@ -30,3 +30,6 @@ django-prometheus==2.5.0
 # Domain helpers
 phonenumbers==9.0.34
 Pillow==12.3.0
+
+# Staff JWT issuance (Identity)
+PyJWT[crypto]==2.10.1

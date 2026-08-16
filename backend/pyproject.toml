@@ -20,6 +20,7 @@ dependencies = [
     "django-prometheus>=2.3",
     "phonenumbers>=8.13",
     "Pillow>=10.4",
+    "pyjwt[crypto]>=2.9",
 ]
 
 [project.optional-dependencies]

@@ -97,6 +97,12 @@ GEOCODER_TIMEOUT = env.int("GEOCODER_TIMEOUT", default=5)
 
 RABBITMQ_URL = env("RABBITMQ_URL", default="amqp://guest:guest@rabbitmq:5672/")
 
+# Identity signs short-lived staff JWTs; the private key stays here, only the JWKS is public
+IDENTITY_JWT_PRIVATE_KEY = env("IDENTITY_JWT_PRIVATE_KEY", default="")
+IDENTITY_JWT_PRIVATE_KEY_FILE = env("IDENTITY_JWT_PRIVATE_KEY_FILE", default="")
+IDENTITY_JWT_KID = env("IDENTITY_JWT_KID", default="dev-1")
+IDENTITY_JWT_TTL = env.int("IDENTITY_JWT_TTL", default=600)
+
 AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [

@@ -11,6 +11,8 @@ class User(AbstractUser):
     phone = models.CharField(max_length=16, unique=True, blank=True, null=True)
     # initial state is v1; bumped on name/phone change so the projection can version-fence
     customer_version = models.PositiveIntegerField(default=1)
+    # bumped to revoke outstanding staff tokens ahead of their TTL
+    authz_version = models.PositiveIntegerField(default=1)
 
     def __str__(self) -> str:
         return self.username

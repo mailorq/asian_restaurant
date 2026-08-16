@@ -8,6 +8,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
+from accounts import jwt_service
 from accounts import service as accounts_service
 from accounts.models import User
 from accounts.schemas import LoginIn, MessageOut, RegisterIn, UserOut
@@ -79,3 +80,17 @@ def logout_view(request):
 def csrf(request):
     get_token(request)
     return {"detail": "ok"}
+
+
+@router.get("/jwks", auth=None)
+def jwks(request):
+    return jwt_service.public_jwks()
+
+
+@router.post("/employee-token", auth=django_auth)
+def employee_token(request):
+    # a signed-in staff member exchanges the session for a short-lived JWT for operations
+    if not jwt_service.is_employee(request.user):
+        raise HttpError(403, "Недостаточно прав")
+    token, ttl = jwt_service.issue_employee_token(request.user)
+    return {"token": token, "token_type": "Bearer", "expires_in": ttl}
