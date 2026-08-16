@@ -3,9 +3,11 @@ from decimal import Decimal
 from ninja import NinjaAPI, Schema
 from ninja.errors import HttpError
 
+from operations.auth import EmployeeJWTAuth
 from operations.models import OperationOrder
 
-api = NinjaAPI(title="Order Operations API", version="0.1.0", docs_url="/docs")
+# staff-only by default; only /health is left open for probes
+api = NinjaAPI(title="Order Operations API", version="0.1.0", docs_url="/docs", auth=EmployeeJWTAuth())
 
 
 class HealthOut(Schema):
@@ -24,7 +26,7 @@ class OpsOrderOut(Schema):
     payment_method: str
 
 
-@api.get("/health", response=HealthOut, tags=["ops"])
+@api.get("/health", response=HealthOut, tags=["ops"], auth=None)
 def health(request) -> dict:
     return {"status": "ok"}
 

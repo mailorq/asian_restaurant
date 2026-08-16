@@ -85,17 +85,19 @@ docker compose exec operations-db psql -U ops_user -d operations -c \
 | `OPERATIONS_RABBITMQ_URL` | consumer/api bus — operations vhost only |
 | `OPERATIONS_BRIDGE_CONSUME_URL` | bridge input — storefront vhost (adapter user) |
 | `OPERATIONS_BRIDGE_PUBLISH_URL` | bridge output — operations vhost (adapter user) |
-| `IDENTITY_JWKS_URL` | Identity public keys for JWT verification (Phase 3) |
+| `IDENTITY_JWKS_URL` | Identity public keys for JWT verification |
 
-## Auth (design; wired in Phase 3)
+## Auth
 
 Identity/storefront remains the sole owner of employee role and the
 `restaurant_employee` group. Operations does not read `auth_user`/`groups`. Staff
-present a short-lived, asymmetrically signed JWT (`sub`, `roles`, `authz_version`,
-`jti`, `exp`); Operations verifies it against Identity's public keys (JWKS). Role
-revocation takes effect within the token TTL plus an
-`identity.employee_role_changed.v1` event. The actor is always taken from the
-verified token, never from a browser-supplied id.
+exchange their session for a short-lived, RS256-signed JWT (`sub`, `roles`,
+`authz_version`, `jti`, `exp`, `iss=identity`, `aud=operations`) at
+`POST /api/auth/employee-token`; `EmployeeJWTAuth` verifies it against Identity's
+JWKS (`GET /api/auth/jwks`) and requires the `restaurant_employee` role. The actor
+is taken from the verified token, never from a browser-supplied id. `/ops-api/*` is
+staff-only; only `/health` is open. Token revocation ahead of TTL (via
+`authz_version`) is enforced in a later slice.
 
 ## Status
 
