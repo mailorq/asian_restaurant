@@ -73,8 +73,11 @@ def _legacy_stock(snapshot=False):
 
 
 def _legacy_control(phase="completed", run_id="run1", counts=None):
-    body = json.dumps({"run_id": run_id, "phase": phase, "as_of": OCCURRED_AT,
-                       "counts": counts or {"product": 1}}).encode()
+    if phase == "completed":
+        counts = {"product": 0, "customer": 0, "order": 0, **(counts or {})}
+    else:
+        counts = counts or {}
+    body = json.dumps({"run_id": run_id, "phase": phase, "as_of": OCCURRED_AT, "counts": counts}).encode()
     headers = {"event_id": str(uuid.uuid4()), "correlation_id": str(uuid.uuid4()),
                "aggregate_version": 1, "occurred_at": OCCURRED_AT, "snapshot_run_id": run_id}
     props = SimpleNamespace(type="snapshot.control", message_id=str(uuid.uuid4()),
@@ -109,7 +112,8 @@ def test_snapshot_control_maps_to_snapshot_aggregate():
     env = json.loads(kwargs["body"])
     assert env["aggregate"] == {"type": "snapshot", "id": "run1", "version": 1}
     assert env["snapshot_run_id"] == "run1"
-    assert env["data"]["phase"] == "completed" and env["data"]["counts"] == {"product": 2}
+    assert env["data"]["phase"] == "completed"
+    assert env["data"]["counts"] == {"product": 2, "customer": 0, "order": 0}
     ch.basic_ack.assert_called_once_with(method.delivery_tag)
 
 

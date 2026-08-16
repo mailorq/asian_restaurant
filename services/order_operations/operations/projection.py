@@ -123,7 +123,7 @@ def _order_created(envelope: Envelope, data) -> None:
         )
         for item in data.items
     )
-    _recount_customer(data.customer_id)
+    _recount_customer(data.customer_id, envelope.occurred_at)
     projection_events.labels(envelope.event_type, "applied").inc()
 
 
@@ -137,7 +137,7 @@ def _order_status_changed(envelope: Envelope, data) -> None:
     order.aggregate_version = envelope.aggregate.version
     order.source_event_at = envelope.occurred_at
     order.save(update_fields=["status", "aggregate_version", "source_event_at", "updated_at"])
-    _recount_customer(order.customer_id)
+    _recount_customer(order.customer_id, envelope.occurred_at)
     projection_events.labels(envelope.event_type, "applied").inc()
 
 
@@ -165,11 +165,20 @@ def _customer_changed(envelope: Envelope, data) -> None:
     projection_events.labels(envelope.event_type, "applied").inc()
 
 
-def _recount_customer(customer_id: int) -> None:
+def _recount_customer(customer_id: int, source_event_at=None) -> None:
     count = OperationOrder.objects.filter(customer_id=customer_id, status__in=ACTIVE_STATUSES).count()
-    CustomerProjection.objects.update_or_create(
-        source_customer_id=customer_id, defaults={"active_orders_count": count}
+    customer, created = CustomerProjection.objects.get_or_create(
+        source_customer_id=customer_id,
+        defaults={"active_orders_count": count, "source_event_at": source_event_at},
     )
+    if created:
+        return
+    customer.active_orders_count = count
+    # stamp the boundary only when the order path first materialised this customer; never
+    # overwrite a customer_changed timestamp with a later order-status one
+    if customer.source_event_at is None and source_event_at is not None:
+        customer.source_event_at = source_event_at
+    customer.save(update_fields=["active_orders_count", "source_event_at", "updated_at"])
 
 
 def _record_expectation(envelope: Envelope, data) -> None:

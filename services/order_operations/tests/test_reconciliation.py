@@ -65,8 +65,10 @@ def _order_status(order_id=1, version=2, status="confirmed"):
 
 
 def _control(run_id, phase, as_of=AS_OF, counts=None):
+    # completed manifests must carry all three aggregate types; tests pass only the non-zero ones
+    full = {"product": 0, "customer": 0, "order": 0, **(counts or {})} if phase == "completed" else (counts or {})
     return _base(EVENT_SNAPSHOT_CONTROL, "snapshot", run_id, 1,
-                 {"run_id": run_id, "phase": phase, "as_of": as_of, "counts": counts or {}}, run_id=run_id)
+                 {"run_id": run_id, "phase": phase, "as_of": as_of, "counts": full}, run_id=run_id)
 
 
 def _completed_run(run_id, snapshots, counts, as_of=AS_OF):
@@ -172,6 +174,15 @@ def test_product_rename_reconciles_healthy():
     run = "run-rename"
     _completed_run(run, [_stock(code="p1", version=2, stock=10, name="Рамен Делюкс", snapshot=True, run_id=run)],
                    {"product": 1})
+    assert reconcile()["status"] == "ok"
+
+
+def test_order_materialized_customer_after_boundary_is_not_extra():
+    # the customer projection is first created by an order event after the boundary; its
+    # source_event_at must come from that event so it is not flagged obsolete
+    projection.apply(*_order(order_id=70, version=1, occurred_at=AFTER))
+    run = "run-postorder"
+    _completed_run(run, [], {"product": 0, "customer": 0, "order": 0})
     assert reconcile()["status"] == "ok"
 
 
