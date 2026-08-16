@@ -17,6 +17,8 @@ from event_contracts import (
 
 
 def _control_env(phase="completed", run_id="r1", envelope_run_id=None, drop_as_of=False, counts=None) -> dict:
+    if counts is None:
+        counts = {} if phase == "started" else {"product": 1, "customer": 1, "order": 1}
     payload = {
         "event_id": str(uuid.uuid4()),
         "event_type": EVENT_SNAPSHOT_CONTROL,
@@ -26,7 +28,7 @@ def _control_env(phase="completed", run_id="r1", envelope_run_id=None, drop_as_o
         "snapshot_run_id": run_id if envelope_run_id is None else envelope_run_id,
         "aggregate": {"type": "snapshot", "id": run_id, "version": 1},
         "correlation_id": str(uuid.uuid4()),
-        "data": {"run_id": run_id, "phase": phase, "as_of": "2026-01-01T00:00:00+00:00", "counts": counts or {}},
+        "data": {"run_id": run_id, "phase": phase, "as_of": "2026-01-01T00:00:00+00:00", "counts": counts},
     }
     if drop_as_of:
         del payload["data"]["as_of"]
@@ -220,11 +222,25 @@ def test_control_as_of_required():
         parse_event(_control_env(drop_as_of=True))
 
 
-def test_control_counts_reject_negative_and_unknown_types():
+def test_control_completed_requires_all_three_keys():
     with pytest.raises(ValidationError):
-        parse_event(_control_env(counts={"product": -1}))
+        parse_event(_control_env(counts={"product": 1, "customer": 1}))  # missing order
+
+
+def test_control_completed_rejects_extra_key():
     with pytest.raises(ValidationError):
-        parse_event(_control_env(counts={"widget": 1}))
+        parse_event(_control_env(counts={"product": 1, "customer": 1, "order": 1, "widget": 1}))
+
+
+def test_control_completed_rejects_negative_count():
+    with pytest.raises(ValidationError):
+        parse_event(_control_env(counts={"product": -1, "customer": 1, "order": 1}))
+
+
+def test_control_started_requires_empty_counts():
+    parse_event(_control_env(phase="started", counts={}))
+    with pytest.raises(ValidationError):
+        parse_event(_control_env(phase="started", counts={"product": 1, "customer": 1, "order": 1}))
 
 
 def test_snapshot_aggregate_requires_run_id():

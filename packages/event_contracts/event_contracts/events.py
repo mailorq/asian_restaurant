@@ -115,11 +115,13 @@ class SnapshotControlData(BaseModel):
 
     @model_validator(mode="after")
     def _validate_counts(self) -> "SnapshotControlData":
-        for key, value in self.counts.items():
-            if key not in SNAPSHOT_AGGREGATES:
-                raise ValueError(f"unsupported aggregate type in counts: {key}")
-            if value < 0:
-                raise ValueError("counts must be non-negative")
+        if any(v < 0 for v in self.counts.values()):
+            raise ValueError("counts must be non-negative")
+        if self.phase == SnapshotPhase.completed:
+            if set(self.counts) != SNAPSHOT_AGGREGATES:
+                raise ValueError("completed counts must have exactly product, customer, order")
+        elif self.counts:
+            raise ValueError("started must carry empty counts")
         return self
 
 
