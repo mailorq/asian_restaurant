@@ -1,3 +1,9 @@
+secrets:
+  # the signing key is a Docker secret sourced from an out-of-repo path (or an external
+  # secret manager), mounted read-only at /run/secrets/identity_jwt_private_key
+  identity_jwt_private_key:
+    file: ${IDENTITY_JWT_KEY_FILE:?set IDENTITY_JWT_KEY_FILE to the key path}
+
 services:
   rabbitmq:
     # production must not load the dev template; !override drops the rabbitmq.conf and
@@ -36,6 +42,18 @@ services:
       - ./ops/rabbitmq/provision.sh:/provision.sh:ro
     entrypoint: ["bash", "/provision.sh"]
     restart: "no"
+
+  backend:
+    # the signing key is a read-only Docker secret file, never an env var; dev mount dropped
+    secrets:
+      - identity_jwt_private_key
+    environment:
+      DJANGO_PRODUCTION: "1"
+      IDENTITY_JWT_KID: ${IDENTITY_JWT_KID:?set IDENTITY_JWT_KID (not the dev kid)}
+      IDENTITY_JWT_PRIVATE_KEY: ""
+      IDENTITY_JWT_PRIVATE_KEY_FILE: /run/secrets/identity_jwt_private_key
+    volumes: !override
+      - media:/app/media
 
   operations-api:
     environment:

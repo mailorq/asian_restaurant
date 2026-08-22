@@ -3,15 +3,19 @@ import time
 import uuid
 
 import jwt
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
 from django.conf import settings
 from jwt.algorithms import RSAAlgorithm
 
-from accounts.models import EMPLOYEE_GROUP
+from accounts.models import EMPLOYEE_GROUP, has_operations_role
 
 ISSUER = "identity"
 AUDIENCE = "operations"
 ALGORITHM = "RS256"
+
+
+class NotAuthorized(Exception):
+    pass
 
 
 def _private_pem() -> str:
@@ -26,17 +30,20 @@ def _private_key():
 
 
 def is_employee(user) -> bool:
-    return user.is_superuser or user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    return has_operations_role(user)
 
 
 def issue_employee_token(user) -> tuple[str, int]:
+    # fail closed at issuance: an inactive or non-staff user never receives a token
+    if not user.is_active or not has_operations_role(user):
+        raise NotAuthorized("user may not receive an operations token")
     ttl = settings.IDENTITY_JWT_TTL
     now = int(time.time())
     claims = {
         "iss": ISSUER,
         "aud": AUDIENCE,
         "sub": str(user.id),
-        "roles": [EMPLOYEE_GROUP] if is_employee(user) else [],
+        "roles": [EMPLOYEE_GROUP],
         "authz_version": user.authz_version,
         "jti": uuid.uuid4().hex,
         "iat": now,
@@ -46,7 +53,26 @@ def issue_employee_token(user) -> tuple[str, int]:
     return token, ttl
 
 
+def _jwk(public_key, kid: str) -> dict:
+    jwk = json.loads(RSAAlgorithm.to_jwk(public_key))
+    jwk.update({"kid": kid, "use": "sig", "alg": ALGORITHM})
+    return jwk
+
+
+def _previous_public_pem() -> str | None:
+    if settings.IDENTITY_JWT_PREVIOUS_PUBLIC_KEY:
+        return settings.IDENTITY_JWT_PREVIOUS_PUBLIC_KEY.replace("\\n", "\n")
+    if settings.IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE:
+        with open(settings.IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE) as fh:
+            return fh.read()
+    return None
+
+
 def public_jwks() -> dict:
-    jwk = json.loads(RSAAlgorithm.to_jwk(_private_key().public_key()))
-    jwk.update({"kid": settings.IDENTITY_JWT_KID, "use": "sig", "alg": ALGORITHM})
-    return {"keys": [jwk]}
+    # publish the previous key alongside the current one so tokens signed before a
+    # rotation still verify until they expire
+    keys = [_jwk(_private_key().public_key(), settings.IDENTITY_JWT_KID)]
+    prev = _previous_public_pem()
+    if prev and settings.IDENTITY_JWT_PREVIOUS_KID:
+        keys.append(_jwk(load_pem_public_key(prev.encode()), settings.IDENTITY_JWT_PREVIOUS_KID))
+    return {"keys": keys}

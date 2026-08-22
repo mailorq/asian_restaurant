@@ -62,8 +62,9 @@ services:
         condition: service_healthy
     volumes:
       - media:/app/media
-      # dev signing key; production supplies its own via a mounted secret
-      - ./ops/identity/jwt_dev_private_key.pem:/run/identity/jwt_private_key.pem:ro
+      # local dev signing key (gitignored; run scripts/dev_gen_jwt_key.sh once);
+      # production injects its own key via a secret and drops this mount (compose.prod.yaml)
+      - ./ops/identity/jwt_private_key.pem:/run/identity/jwt_private_key.pem:ro
     expose:
       - "8000"          # internal only; reached over the compose network
     restart: unless-stopped

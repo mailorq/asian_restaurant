@@ -96,8 +96,10 @@ exchange their session for a short-lived, RS256-signed JWT (`sub`, `roles`,
 `POST /api/auth/employee-token`; `EmployeeJWTAuth` verifies it against Identity's
 JWKS (`GET /api/auth/jwks`) and requires the `restaurant_employee` role. The actor
 is taken from the verified token, never from a browser-supplied id. `/ops-api/*` is
-staff-only; only `/health` is open. Token revocation ahead of TTL (via
-`authz_version`) is enforced in a later slice.
+staff-only; only `/health` is open. Revocation is enforced ahead of TTL: every request
+also requires the local `EmployeeAuthorization` projection to match the token's
+`authz_version` with an active role and user, failing closed on an unknown, stale, or
+unavailable projection (see `ops/identity/README.md` for the propagation SLO).
 
 ## Status
 

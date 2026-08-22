@@ -5,6 +5,14 @@
 !.env.e2e
 compose.override.yaml
 
+# private keys / signing material — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+ops/identity/*.pem
+
 # python / django
 __pycache__/
 *.py[cod]

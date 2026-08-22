@@ -102,6 +102,30 @@ IDENTITY_JWT_PRIVATE_KEY = env("IDENTITY_JWT_PRIVATE_KEY", default="")
 IDENTITY_JWT_PRIVATE_KEY_FILE = env("IDENTITY_JWT_PRIVATE_KEY_FILE", default="")
 IDENTITY_JWT_KID = env("IDENTITY_JWT_KID", default="dev-1")
 IDENTITY_JWT_TTL = env.int("IDENTITY_JWT_TTL", default=600)
+# previous public key kept in the JWKS during rotation so in-flight tokens still verify
+IDENTITY_JWT_PREVIOUS_PUBLIC_KEY = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY", default="")
+IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE", default="")
+IDENTITY_JWT_PREVIOUS_KID = env("IDENTITY_JWT_PREVIOUS_KID", default="")
+
+DJANGO_PRODUCTION = env.bool("DJANGO_PRODUCTION", default=False)
+if DJANGO_PRODUCTION:
+    import os
+
+    from django.core.exceptions import ImproperlyConfigured
+
+    if SECRET_KEY == "dev-insecure-change-me":
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set in production")
+    if DEBUG:
+        raise ImproperlyConfigured("DJANGO_DEBUG must be off in production")
+    if "*" in ALLOWED_HOSTS:
+        raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS must be restricted in production")
+    if IDENTITY_JWT_KID == "dev-1":
+        raise ImproperlyConfigured("production must not use the development signing kid")
+    # the signing key comes from a readable secret file (Docker/K8s secret), not an env var
+    if IDENTITY_JWT_PRIVATE_KEY:
+        raise ImproperlyConfigured("do not pass IDENTITY_JWT_PRIVATE_KEY inline; mount a secret file")
+    if not (IDENTITY_JWT_PRIVATE_KEY_FILE and os.access(IDENTITY_JWT_PRIVATE_KEY_FILE, os.R_OK)):
+        raise ImproperlyConfigured("IDENTITY_JWT_PRIVATE_KEY_FILE must point to a readable secret")
 
 AUTH_USER_MODEL = "accounts.User"
 
