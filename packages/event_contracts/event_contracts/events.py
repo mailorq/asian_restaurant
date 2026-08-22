@@ -13,6 +13,7 @@ EVENT_ORDER_CREATED = "orders.order.created.v1"
 EVENT_ORDER_STATUS_CHANGED = "orders.order.status_changed.v1"
 EVENT_STOCK_CHANGED = "inventory.stock_changed.v1"
 EVENT_CUSTOMER_CHANGED = "identity.customer_changed.v1"
+EVENT_AUTHZ_CHANGED = "identity.authz_changed.v1"
 EVENT_SNAPSHOT_CONTROL = "operations.snapshot.control.v1"
 
 # width matches the storefront DecimalField(max_digits=10, decimal_places=2); a value the
@@ -104,6 +105,14 @@ class CustomerChangedData(BaseModel):
     phone: str = ""
 
 
+class AuthzChangedData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    subject_id: int = Field(gt=0)
+    authz_version: int = Field(ge=1)
+    role_active: bool
+    user_active: bool
+
+
 class SnapshotControlData(BaseModel):
     model_config = ConfigDict(extra="ignore")
     run_id: str = Field(min_length=1)
@@ -130,6 +139,7 @@ _REGISTRY: dict[str, type[BaseModel]] = {
     EVENT_ORDER_STATUS_CHANGED: OrderStatusChangedData,
     EVENT_STOCK_CHANGED: StockChangedData,
     EVENT_CUSTOMER_CHANGED: CustomerChangedData,
+    EVENT_AUTHZ_CHANGED: AuthzChangedData,
     EVENT_SNAPSHOT_CONTROL: SnapshotControlData,
 }
 
@@ -138,6 +148,7 @@ _AGGREGATE: dict[str, tuple[str, str]] = {
     EVENT_ORDER_STATUS_CHANGED: ("order", "order_id"),
     EVENT_STOCK_CHANGED: ("product", "product_code"),
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
+    EVENT_AUTHZ_CHANGED: ("authz", "subject_id"),
     EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
 }
 
@@ -159,6 +170,9 @@ def parse_event(raw: dict) -> tuple[Envelope, BaseModel]:
     if envelope.event_type == EVENT_SNAPSHOT_CONTROL:
         if envelope.snapshot_run_id != data.run_id:
             raise ContractError("snapshot_run_id must match control run_id")
+    elif envelope.event_type == EVENT_AUTHZ_CHANGED:
+        if envelope.aggregate.version != data.authz_version:
+            raise ContractError("aggregate.version must equal authz_version")
     elif envelope.snapshot and not envelope.snapshot_run_id:
         raise ContractError("snapshot aggregate event requires snapshot_run_id")
     return envelope, data

@@ -1,10 +1,12 @@
 from event_contracts.envelope import Aggregate, Envelope
 from event_contracts.events import (
+    EVENT_AUTHZ_CHANGED,
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
     EVENT_SNAPSHOT_CONTROL,
     EVENT_STOCK_CHANGED,
+    AuthzChangedData,
     ContractError,
     CustomerChangedData,
     OrderCreatedData,
@@ -26,7 +28,9 @@ __all__ = [
     "EVENT_ORDER_STATUS_CHANGED",
     "EVENT_STOCK_CHANGED",
     "EVENT_CUSTOMER_CHANGED",
+    "EVENT_AUTHZ_CHANGED",
     "EVENT_SNAPSHOT_CONTROL",
+    "AuthzChangedData",
     "OrderItemData",
     "OrderCreatedData",
     "OrderStatusChangedData",

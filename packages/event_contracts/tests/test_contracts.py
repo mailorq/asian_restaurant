@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from event_contracts import (
+    EVENT_AUTHZ_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_SNAPSHOT_CONTROL,
     ContractError,
@@ -14,6 +15,20 @@ from event_contracts import (
     UnknownEventType,
     parse_event,
 )
+
+
+def _authz_env(subject_id=5, version=1, role_active=True, user_active=True) -> dict:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": EVENT_AUTHZ_CHANGED,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": "identity",
+        "aggregate": {"type": "authz", "id": str(subject_id), "version": version},
+        "correlation_id": str(uuid.uuid4()),
+        "data": {"subject_id": subject_id, "authz_version": version,
+                 "role_active": role_active, "user_active": user_active},
+    }
 
 
 def _control_env(phase="completed", run_id="r1", envelope_run_id=None, drop_as_of=False, counts=None) -> dict:
@@ -205,6 +220,23 @@ def test_payment_method_card_accepted():
     payload["data"]["payment_method"] = "card"
     _e, data = parse_event(payload)
     assert data.payment_method == "card"
+
+
+def test_authz_changed_valid():
+    _e, data = parse_event(_authz_env(subject_id=5, version=3, role_active=False))
+    assert data.subject_id == 5 and data.authz_version == 3 and data.role_active is False
+
+
+def test_authz_subject_must_be_positive():
+    with pytest.raises(ValidationError):
+        parse_event(_authz_env(subject_id=0))
+
+
+def test_authz_aggregate_version_must_equal_authz_version():
+    payload = _authz_env(subject_id=5, version=2)
+    payload["data"]["authz_version"] = 3  # contradicts aggregate.version
+    with pytest.raises(ContractError):
+        parse_event(payload)
 
 
 def test_control_valid_completed():
