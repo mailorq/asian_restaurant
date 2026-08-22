@@ -6,6 +6,12 @@ from django.db import models
 EMPLOYEE_GROUP = "restaurant_employee"
 
 
+def has_operations_role(user) -> bool:
+    # a superuser is an operations employee too; this is the single source of truth for
+    # "may act in Operations", shared by token issuance, authz events and the backfill
+    return bool(user.is_superuser or user.groups.filter(name=EMPLOYEE_GROUP).exists())
+
+
 class User(AbstractUser):
     # phone stored normalized to E.164, e.g. +380671234567
     phone = models.CharField(max_length=16, unique=True, blank=True, null=True)

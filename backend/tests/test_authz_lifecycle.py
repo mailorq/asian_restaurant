@@ -1,0 +1,150 @@
+from types import SimpleNamespace
+
+import pytest
+from django.contrib import admin as dj_admin
+from django.contrib.auth.models import Group
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.core.management import call_command
+from django.test import Client, RequestFactory
+
+from accounts.admin import CustomUserAdmin
+from accounts.models import EMPLOYEE_GROUP, EmployeeRoleAudit, User
+from employee import service
+from orders.models import OrderOutbox
+
+pytestmark = pytest.mark.django_db
+
+
+def _authz_rows(subject_id):
+    return OrderOutbox.objects.filter(event_type="identity.authz_changed", aggregate_id=str(subject_id))
+
+
+def _msg_request(actor):
+    req = RequestFactory().post("/")
+    req.user = actor
+    req.session = {}
+    req._messages = FallbackStorage(req)
+    return req
+
+
+# --- role service: correctness, idempotency, active state -------------------
+def test_grant_bumps_version_audits_and_emits(user, employee_user):
+    start = user.authz_version
+    service.set_employee_role(actor=employee_user, target=user, grant=True)
+    user.refresh_from_db()
+    assert user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    assert user.authz_version == start + 1
+    assert EmployeeRoleAudit.objects.filter(target=user, action="grant").exists()
+    row = _authz_rows(user.id).latest("created_at")
+    assert row.aggregate_version == user.authz_version
+    assert row.payload == {"subject_id": user.id, "authz_version": user.authz_version,
+                           "role_active": True, "user_active": True}
+
+
+def test_repeated_grant_is_a_noop(user, employee_user):
+    service.set_employee_role(actor=employee_user, target=user, grant=True)
+    user.refresh_from_db()
+    v, audits, events = user.authz_version, EmployeeRoleAudit.objects.filter(target=user).count(), _authz_rows(user.id).count()
+    service.set_employee_role(actor=employee_user, target=user, grant=True)  # already granted
+    user.refresh_from_db()
+    assert user.authz_version == v
+    assert EmployeeRoleAudit.objects.filter(target=user).count() == audits
+    assert _authz_rows(user.id).count() == events
+
+
+def test_repeated_revoke_of_absent_role_is_a_noop(user, employee_user):
+    start = user.authz_version
+    service.set_employee_role(actor=employee_user, target=user, grant=False)  # not a member
+    user.refresh_from_db()
+    assert user.authz_version == start
+    assert not _authz_rows(user.id).exists()
+    assert not EmployeeRoleAudit.objects.filter(target=user).exists()
+
+
+def test_deactivating_employee_revokes_via_authz(employee_user):
+    start = employee_user.authz_version
+    service.set_active(actor=employee_user, target=employee_user, active=False)
+    employee_user.refresh_from_db()
+    assert employee_user.is_active is False
+    assert employee_user.authz_version == start + 1
+    row = _authz_rows(employee_user.id).latest("created_at")
+    assert row.payload["user_active"] is False
+
+
+def test_deactivating_customer_emits_no_authz(user):
+    start = user.authz_version
+    service.set_active(actor=user, target=user, active=False)
+    user.refresh_from_db()
+    assert user.is_active is False and user.authz_version == start
+    assert not _authz_rows(user.id).exists()
+
+
+# --- Admin: role membership & is_active are not editable in place -----------
+def test_admin_cannot_grant_employee_role(user, superuser):
+    ma = CustomUserAdmin(User, dj_admin.site)
+    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.add(group))  # form tries to add
+    ma.save_related(_msg_request(superuser), form, [], change=True)
+    user.refresh_from_db()
+    assert not user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    assert not EmployeeRoleAudit.objects.filter(target=user).exists()
+
+
+def test_admin_cannot_revoke_employee_role(user, superuser):
+    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    user.groups.add(group)
+    ma = CustomUserAdmin(User, dj_admin.site)
+    form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.remove(group))  # form tries to remove
+    ma.save_related(_msg_request(superuser), form, [], change=True)
+    user.refresh_from_db()
+    assert user.groups.filter(name=EMPLOYEE_GROUP).exists()
+
+
+def test_admin_membership_has_no_shared_request_state(user, employee_user, superuser):
+    # two independent users through the SAME ModelAdmin singleton must not cross state
+    ma = CustomUserAdmin(User, dj_admin.site)
+    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    # employee_user is a member; a form tries to remove it -> must be restored
+    form_a = SimpleNamespace(instance=employee_user, save_m2m=lambda: employee_user.groups.remove(group))
+    ma.save_related(_msg_request(superuser), form_a, [], change=True)
+    # user is not a member; a form tries to add it -> must be reverted
+    form_b = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.add(group))
+    ma.save_related(_msg_request(superuser), form_b, [], change=True)
+    employee_user.refresh_from_db()
+    user.refresh_from_db()
+    assert employee_user.groups.filter(name=EMPLOYEE_GROUP).exists()      # restored
+    assert not user.groups.filter(name=EMPLOYEE_GROUP).exists()           # reverted
+
+
+def test_admin_is_active_change_routes_through_service(employee_user, superuser):
+    ma = CustomUserAdmin(User, dj_admin.site)
+    start = employee_user.authz_version
+    employee_user.is_active = False  # what the admin form submitted
+    ma.save_model(_msg_request(superuser), employee_user, SimpleNamespace(changed_data=["is_active"]), change=True)
+    employee_user.refresh_from_db()
+    assert employee_user.is_active is False and employee_user.authz_version == start + 1
+    assert _authz_rows(employee_user.id).latest("created_at").payload["user_active"] is False
+
+
+# --- superuser is an operations employee (decision A) -----------------------
+def test_backfill_emits_authz_for_superuser(superuser):
+    call_command("emit_authz_state")
+    row = _authz_rows(superuser.id).latest("created_at")
+    assert row.payload["role_active"] is True and row.payload["user_active"] is True
+
+
+# --- CSRF on session-authenticated POSTs ------------------------------------
+def test_employee_token_and_logout_enforce_csrf(employee_user):
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(employee_user)
+    assert csrf_client.post("/api/auth/employee-token").status_code == 403
+    assert csrf_client.post("/api/auth/logout").status_code == 403
+
+
+def test_employee_token_works_with_csrf(employee_user):
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(employee_user)
+    csrf_client.get("/api/auth/csrf")
+    token = csrf_client.cookies["csrftoken"].value
+    resp = csrf_client.post("/api/auth/employee-token", HTTP_X_CSRFTOKEN=token)
+    assert resp.status_code == 200 and resp.json()["token"]

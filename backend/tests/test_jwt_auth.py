@@ -31,9 +31,16 @@ def test_issue_employee_token_claims(signing, employee_user):
     assert ttl == 600
 
 
-def test_customer_gets_no_employee_role(signing, user):
-    token, _ = jwt_service.issue_employee_token(user)
-    assert _decode(token, signing.public_key())["roles"] == []
+def test_customer_cannot_get_operations_token(signing, user):
+    with pytest.raises(jwt_service.NotAuthorized):
+        jwt_service.issue_employee_token(user)
+
+
+def test_inactive_employee_cannot_get_token(signing, employee_user):
+    employee_user.is_active = False
+    employee_user.save(update_fields=["is_active"])
+    with pytest.raises(jwt_service.NotAuthorized):
+        jwt_service.issue_employee_token(employee_user)
 
 
 def test_jwks_is_public_and_matches_signing_key(signing, api):
