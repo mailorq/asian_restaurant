@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 from event_contracts import (
+    EVENT_AUTHZ_CHANGED,
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
@@ -13,7 +14,13 @@ from event_contracts import (
 from prometheus_client import REGISTRY
 
 from operations import projection
-from operations.models import CustomerProjection, InboxEvent, InventoryProjection, OperationOrder
+from operations.models import (
+    CustomerProjection,
+    EmployeeAuthorization,
+    InboxEvent,
+    InventoryProjection,
+    OperationOrder,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -216,3 +223,53 @@ def test_customer_version_fencing_update_and_conflict():
     with pytest.raises(projection.ProjectionConflict):
         projection.apply(*_customer(customer_id=77, version=2, name="Другой"))
     assert CustomerProjection.objects.get(source_customer_id=77).name == "Пётр"
+
+
+def _authz(subject_id=7, version=1, role_active=True, user_active=True):
+    raw = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": EVENT_AUTHZ_CHANGED,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": "identity",
+        "aggregate": {"type": "authz", "id": str(subject_id), "version": version},
+        "correlation_id": str(uuid.uuid4()),
+        "data": {"subject_id": subject_id, "authz_version": version,
+                 "role_active": role_active, "user_active": user_active},
+    }
+    return parse_event(raw)
+
+
+def test_authz_projection_builds_and_version_fences():
+    projection.apply(*_authz(7, 1, role_active=True))
+    ea = EmployeeAuthorization.objects.get(subject_id=7)
+    assert ea.role_active and ea.authz_version == 1
+
+    projection.apply(*_authz(7, 2, role_active=False))  # revoke advances the version
+    ea.refresh_from_db()
+    assert ea.authz_version == 2 and ea.role_active is False
+
+    projection.apply(*_authz(7, 1, role_active=True))  # stale re-grant is a no-op
+    ea.refresh_from_db()
+    assert ea.authz_version == 2 and ea.role_active is False
+
+
+def test_authz_same_version_same_state_is_idempotent():
+    projection.apply(*_authz(7, 1, role_active=True))
+    # a re-emitted state event at the same version is an idempotent no-op, not a conflict
+    assert projection.apply(*_authz(7, 1, role_active=True)) is True
+    assert EmployeeAuthorization.objects.get(subject_id=7).authz_version == 1
+
+
+def test_authz_same_version_contradiction_is_conflict():
+    projection.apply(*_authz(7, 1, role_active=True))
+    with pytest.raises(projection.ProjectionConflict):
+        projection.apply(*_authz(7, 1, role_active=False))
+
+
+def test_authz_out_of_order_revoke_then_stale_grant():
+    projection.apply(*_authz(7, 1, role_active=True))
+    projection.apply(*_authz(7, 2, role_active=False))   # revoke advances
+    projection.apply(*_authz(7, 1, role_active=True))     # late grant is stale -> ignored
+    ea = EmployeeAuthorization.objects.get(subject_id=7)
+    assert ea.authz_version == 2 and ea.role_active is False

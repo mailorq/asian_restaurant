@@ -6,6 +6,7 @@ import pika
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from event_contracts import (
+    EVENT_AUTHZ_CHANGED,
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
@@ -37,6 +38,7 @@ LEGACY_TO_VERSIONED = {
     "order.status_changed": EVENT_ORDER_STATUS_CHANGED,
     "inventory.stock_changed": EVENT_STOCK_CHANGED,
     "identity.customer_changed": EVENT_CUSTOMER_CHANGED,
+    "identity.authz_changed": EVENT_AUTHZ_CHANGED,
     "snapshot.control": EVENT_SNAPSHOT_CONTROL,
 }
 
@@ -46,6 +48,7 @@ _AGGREGATE = {
     EVENT_ORDER_STATUS_CHANGED: ("order", "order_id"),
     EVENT_STOCK_CHANGED: ("product", "product_code"),
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
+    EVENT_AUTHZ_CHANGED: ("authz", "subject_id"),
     EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
 }
 
@@ -123,6 +126,13 @@ def _map_data(event_type: str, legacy: dict) -> dict:
             "name": legacy.get("name", ""),
             "phone": legacy.get("phone", ""),
         }
+    if event_type == EVENT_AUTHZ_CHANGED:
+        return {
+            "subject_id": _safe_int(legacy["subject_id"]),
+            "authz_version": _safe_int(legacy["authz_version"]),
+            "role_active": bool(legacy.get("role_active")),
+            "user_active": bool(legacy.get("user_active")),
+        }
     if event_type == EVENT_SNAPSHOT_CONTROL:
         return {
             "run_id": legacy["run_id"],
@@ -140,6 +150,13 @@ def _map_data(event_type: str, legacy: dict) -> dict:
 ORIGIN_PRODUCER = "storefront"
 RELAYED_BY = "storefront-bridge"
 
+# producer is the semantic owner of the event, not the transport; identity events keep
+# producer=identity so downstream provenance/authorization checks stay meaningful
+_PRODUCER = {
+    EVENT_AUTHZ_CHANGED: "identity",
+    EVENT_CUSTOMER_CHANGED: "identity",
+}
+
 
 def build_envelope(properties, event_type: str, legacy: dict) -> dict:
     headers = properties.headers or {}
@@ -150,7 +167,7 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
         "schema_version": 1,
         # origin time only; the bridge never invents occurred_at (see _on_message guard)
         "occurred_at": headers["occurred_at"],
-        "producer": ORIGIN_PRODUCER,
+        "producer": _PRODUCER.get(event_type, ORIGIN_PRODUCER),
         "relayed_by": RELAYED_BY,
         "snapshot": bool(headers.get("snapshot")),
         "snapshot_run_id": headers.get("snapshot_run_id"),

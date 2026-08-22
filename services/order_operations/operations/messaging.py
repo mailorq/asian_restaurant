@@ -17,6 +17,7 @@ BOUND_EVENTS = (
     "orders.order.status_changed.v1",
     "inventory.stock_changed.v1",
     "identity.customer_changed.v1",
+    "identity.authz_changed.v1",
     "operations.snapshot.control.v1",
 )
 

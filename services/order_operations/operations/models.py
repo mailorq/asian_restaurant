@@ -25,6 +25,17 @@ class OperationOrder(models.Model):
         return f"OperationOrder<{self.source_order_id}> ({self.status})"
 
 
+class EmployeeAuthorization(models.Model):
+    subject_id = models.PositiveIntegerField(unique=True)
+    authz_version = models.PositiveIntegerField(default=0)
+    role_active = models.BooleanField(default=False)
+    user_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"authz<{self.subject_id}> v{self.authz_version}"
+
+
 class SnapshotRun(models.Model):
     run_id = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=12, default="started")

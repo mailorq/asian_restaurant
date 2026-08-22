@@ -3,6 +3,7 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 from event_contracts import (
+    EVENT_AUTHZ_CHANGED,
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
@@ -14,6 +15,7 @@ from event_contracts import (
 from operations.metrics import projection_events
 from operations.models import (
     CustomerProjection,
+    EmployeeAuthorization,
     InboxEvent,
     InventoryProjection,
     OperationOrder,
@@ -72,6 +74,8 @@ def apply(envelope: Envelope, data) -> bool:
         _stock_changed(envelope, data)
     elif envelope.event_type == EVENT_CUSTOMER_CHANGED:
         _customer_changed(envelope, data)
+    elif envelope.event_type == EVENT_AUTHZ_CHANGED:
+        _authz_changed(envelope, data)
     return True
 
 
@@ -161,6 +165,26 @@ def _customer_changed(envelope: Envelope, data) -> None:
         source_customer_id=data.customer_id,
         defaults={"name": data.name, "phone": data.phone,
                   "aggregate_version": envelope.aggregate.version, "source_event_at": envelope.occurred_at},
+    )
+    projection_events.labels(envelope.event_type, "applied").inc()
+
+
+def _authz_changed(envelope: Envelope, data) -> None:
+    incoming = envelope.aggregate.version
+    existing = EmployeeAuthorization.objects.select_for_update().filter(subject_id=data.subject_id).first()
+    if existing:
+        if incoming < existing.authz_version:
+            projection_events.labels(envelope.event_type, "stale").inc()
+            return
+        if incoming == existing.authz_version:
+            # same version, same state is an idempotent re-emit; contradictory state is a fault
+            if (existing.role_active, existing.user_active) == (data.role_active, data.user_active):
+                projection_events.labels(envelope.event_type, "idempotent").inc()
+                return
+            raise ProjectionConflict("authz", envelope.aggregate.id, incoming, envelope.event_id)
+    EmployeeAuthorization.objects.update_or_create(
+        subject_id=data.subject_id,
+        defaults={"authz_version": incoming, "role_active": data.role_active, "user_active": data.user_active},
     )
     projection_events.labels(envelope.event_type, "applied").inc()
 
