@@ -5,12 +5,14 @@
 !.env.e2e
 compose.override.yaml
 
-# private keys / signing material — never commit
+# private keys / signing material — never commit (*.pem.example placeholders are not matched)
 *.pem
 *.key
 *.p12
 *.pfx
 *.jks
+id_rsa
+id_ecdsa
 ops/identity/*.pem
 
 # python / django

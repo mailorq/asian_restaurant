@@ -7,17 +7,20 @@ scripts/dev_gen_jwt_key.sh   # writes ops/identity/jwt_private_key.pem (gitignor
 `compose.yaml` mounts that key into `backend` read-only. It is never committed.
 
 ## Production
-The private key is injected as a secret (`IDENTITY_JWT_PRIVATE_KEY`, PEM), not a repo
-mount. `compose.prod.yaml` sets `DJANGO_PRODUCTION=1` (settings fail closed if the key is
-absent, or if `SECRET_KEY`/`DEBUG`/`ALLOWED_HOSTS` use dev defaults) and drops the dev
-mount. In Kubernetes, mount the secret to a tmpfs path and point
-`IDENTITY_JWT_PRIVATE_KEY_FILE` at it, or pass `IDENTITY_JWT_PRIVATE_KEY` from the secret.
+The private key is a **read-only secret file** mounted at
+`/run/secrets/identity_jwt_private_key`, pointed to by `IDENTITY_JWT_PRIVATE_KEY_FILE`
+(`compose.prod.yaml` uses a Docker secret). Production **rejects** an inline
+`IDENTITY_JWT_PRIVATE_KEY`: with `DJANGO_PRODUCTION=1` the settings fail closed if the
+secret file is missing/unreadable, if the dev `kid` is used, if an inline key is passed,
+or if `SECRET_KEY`/`DEBUG`/`ALLOWED_HOSTS` use dev defaults. Inline
+`IDENTITY_JWT_PRIVATE_KEY` is a **dev-only** convenience and is never valid in production.
 
 ## Key rotation (no downtime)
 Two keys may be published in the JWKS at once, distinguished by `kid`:
-1. generate a new key, set it as `IDENTITY_JWT_PRIVATE_KEY` with a new `IDENTITY_JWT_KID`;
-2. keep the old public key as `IDENTITY_JWT_PREVIOUS_PUBLIC_KEY` + `IDENTITY_JWT_PREVIOUS_KID`
-   so tokens signed before the switch still verify;
+1. generate a new key file, point `IDENTITY_JWT_PRIVATE_KEY_FILE` at it with a new
+   `IDENTITY_JWT_KID`;
+2. keep the old public key as `IDENTITY_JWT_PREVIOUS_PUBLIC_KEY(_FILE)` +
+   `IDENTITY_JWT_PREVIOUS_KID` so tokens signed before the switch still verify;
 3. after the old TTL window elapses, drop the previous key.
 New tokens sign with the current key; operations selects the verifying key by `kid`.
 
