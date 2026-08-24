@@ -6,6 +6,27 @@ from cart import service
 from menu.models import Product
 
 
+@pytest.fixture(scope="session")
+def _identity_key_file(tmp_path_factory):
+    # ephemeral signing key generated in-process; no PEM ever touches the repo, .env or CI
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    path = tmp_path_factory.mktemp("identity") / "jwt_private_key.pem"
+    path.write_bytes(pem)
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def identity_signing_key(settings, _identity_key_file):
+    settings.IDENTITY_JWT_PRIVATE_KEY = ""
+    settings.IDENTITY_JWT_PRIVATE_KEY_FILE = _identity_key_file
+
+
 @pytest.fixture(autouse=True)
 def cart_redis(settings):
     # isolate cart data on a throwaway redis db and force the async client to
