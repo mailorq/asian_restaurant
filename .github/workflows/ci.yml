@@ -50,6 +50,16 @@ jobs:
       - run: python manage.py check
       - run: pytest
 
+  security-config:
+    # runs from the repo root (no working-directory), so scripts resolve compose files
+    # and git paths correctly; ubuntu-latest ships Docker Compose v2 for the config check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose version
+      - run: bash scripts/check_no_secrets.sh
+      - run: bash scripts/check_prod_config.sh
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
