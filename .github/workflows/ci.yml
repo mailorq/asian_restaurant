@@ -57,6 +57,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose version
+      # the production render must never depend on a repo-root .env; guard against one being
+      # committed or created before the config check runs
+      - name: repo-root .env must be absent
+        run: test ! -e .env
       - run: bash scripts/check_no_secrets.sh
       - run: bash scripts/check_prod_config.sh
 
