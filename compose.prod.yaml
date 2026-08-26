@@ -1,3 +1,18 @@
+# production storefront runtime: the base `env_file: [.env]` is reset per service below, so the
+# render never depends on a repo-root .env; every required value must be supplied explicitly.
+x-storefront-prod-env: &storefront-prod-env
+  DJANGO_PRODUCTION: "1"
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS (no wildcard)}
+  DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+  REDIS_URL: ${REDIS_URL:?set REDIS_URL}
+  CART_REDIS_URL: ${CART_REDIS_URL:?set CART_REDIS_URL}
+  RABBITMQ_URL: ${RABBITMQ_URL:?set RABBITMQ_URL}
+  IDENTITY_JWT_KID: ${IDENTITY_JWT_KID:?set IDENTITY_JWT_KID (not the dev kid)}
+  # signing key is a read-only secret file, never inline (settings reject a non-empty inline key)
+  IDENTITY_JWT_PRIVATE_KEY: ""
+  IDENTITY_JWT_PRIVATE_KEY_FILE: /run/secrets/identity_jwt_private_key
+
 secrets:
   # the signing key is a Docker secret sourced from an out-of-repo path (or an external
   # secret manager), mounted read-only at /run/secrets/identity_jwt_private_key
@@ -5,6 +20,13 @@ secrets:
     file: ${IDENTITY_JWT_KEY_FILE:?set IDENTITY_JWT_KEY_FILE to the key path}
 
 services:
+  db:
+    # production must not fall back to blank/default database credentials
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+
   rabbitmq:
     # production must not load the dev template; !override drops the rabbitmq.conf and
     # definitions.dev.json mounts so load_definitions is off. Bootstrap a baseline admin,
@@ -44,16 +66,30 @@ services:
     restart: "no"
 
   backend:
-    # the signing key is a read-only Docker secret file, never an env var; dev mount dropped
+    # signing key is a read-only Docker secret file, never an env var; dev mount dropped and
+    # base `env_file: [.env]` reset so the production render never depends on repo-root .env
     secrets:
       - identity_jwt_private_key
-    environment:
-      DJANGO_PRODUCTION: "1"
-      IDENTITY_JWT_KID: ${IDENTITY_JWT_KID:?set IDENTITY_JWT_KID (not the dev kid)}
-      IDENTITY_JWT_PRIVATE_KEY: ""
-      IDENTITY_JWT_PRIVATE_KEY_FILE: /run/secrets/identity_jwt_private_key
+    env_file: !reset null
+    environment: *storefront-prod-env
     volumes: !override
       - media:/app/media
+
+  # transactional outbox relay is a storefront Django process: it starts under the same
+  # production guard and needs the signing-key secret to satisfy the guard's key-file check
+  relay:
+    secrets:
+      - identity_jwt_private_key
+    env_file: !reset null
+    environment: *storefront-prod-env
+
+  # legacy in-storefront projection consumer (RestaurantOrder). The independent operations
+  # service now owns projections in its own database and nothing in the storefront reads
+  # RestaurantOrder, so this parallel consumer is not run in production: it is gated behind a
+  # profile production never activates, and its base `env_file: [.env]` is reset.
+  ops:
+    profiles: ["legacy-projection"]
+    env_file: !reset null
 
   operations-api:
     environment:
