@@ -8,10 +8,16 @@ from pydantic import ValidationError
 from event_contracts import (
     EVENT_AUTHZ_CHANGED,
     EVENT_ORDER_CREATED,
+    EVENT_ORDER_TRANSITION_REJECTED,
+    EVENT_ORDER_TRANSITION_REQUESTED,
+    EVENT_ORDER_TRANSITION_SUCCEEDED,
     EVENT_SNAPSHOT_CONTROL,
     ContractError,
     Envelope,
     OrderCreatedData,
+    OrderTransitionRejectedData,
+    OrderTransitionRequestedData,
+    OrderTransitionSucceededData,
     UnknownEventType,
     parse_event,
 )
@@ -297,6 +303,152 @@ def test_empty_order_with_nonzero_total_rejected():
     payload["data"]["total"] = "100.00"
     with pytest.raises(ValidationError):
         parse_event(payload)
+
+
+def _transition_env(event_type, data, *, order_id=1, version=1, producer=None) -> dict:
+    if producer is None:
+        producer = "operations" if event_type == EVENT_ORDER_TRANSITION_REQUESTED else "storefront"
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": event_type,
+        "schema_version": 1,
+        "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+        "producer": producer,
+        "aggregate": {"type": "order", "id": str(order_id), "version": version},
+        "correlation_id": str(uuid.uuid4()),
+        "data": data,
+    }
+
+
+def _requested_data(**override) -> dict:
+    data = {
+        "command_id": str(uuid.uuid4()),
+        "actor_id": 42,
+        "order_id": 1,
+        "expected_status": "created",
+        "target_status": "confirmed",
+        "reason": "",
+    }
+    data.update(override)
+    return data
+
+
+def test_transition_requested_valid():
+    env, data = parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data()))
+    assert isinstance(data, OrderTransitionRequestedData)
+    assert data.order_id == 1 and data.expected_status == "created" and data.target_status == "confirmed"
+
+
+def test_transition_requested_target_must_differ():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REQUESTED,
+            _requested_data(expected_status="confirmed", target_status="confirmed"),
+        ))
+
+
+def test_transition_requested_actor_must_be_positive():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(actor_id=0)))
+
+
+def test_transition_requested_bad_command_id_rejected():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(command_id="nope")))
+
+
+def test_transition_aggregate_id_must_match_order():
+    with pytest.raises(ContractError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(order_id=1), order_id=999))
+
+
+def test_transition_succeeded_valid():
+    cid = str(uuid.uuid4())
+    env, data = parse_event(_transition_env(
+        EVENT_ORDER_TRANSITION_SUCCEEDED,
+        {"command_id": cid, "order_id": 1, "from_status": "created", "status": "confirmed"},
+    ))
+    assert isinstance(data, OrderTransitionSucceededData)
+    assert str(data.command_id) == cid and data.status == "confirmed"
+
+
+def test_transition_rejected_valid_and_code_constrained():
+    env, data = parse_event(_transition_env(
+        EVENT_ORDER_TRANSITION_REJECTED,
+        {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "stale_status",
+         "current_status": "preparing", "detail": "already advanced"},
+    ))
+    assert isinstance(data, OrderTransitionRejectedData)
+    assert data.reject_code == "stale_status" and data.current_status == "preparing"
+
+
+def test_transition_rejected_unknown_code_rejected():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REJECTED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "banana"},
+        ))
+
+
+def test_transition_rejected_order_not_found_allows_absent_status():
+    env, data = parse_event(_transition_env(
+        EVENT_ORDER_TRANSITION_REJECTED,
+        {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "order_not_found"},
+    ))
+    assert data.current_status is None
+
+
+def test_transition_requested_wrong_producer_rejected():
+    with pytest.raises(ContractError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(), producer="storefront"))
+
+
+def test_transition_outcome_wrong_producer_rejected():
+    with pytest.raises(ContractError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_SUCCEEDED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "from_status": "created", "status": "confirmed"},
+            producer="operations",
+        ))
+
+
+def test_transition_succeeded_from_equal_status_rejected():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_SUCCEEDED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "from_status": "confirmed", "status": "confirmed"},
+        ))
+
+
+def test_transition_rejected_stale_requires_current_status():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REJECTED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "stale_status"},
+        ))
+
+
+def test_transition_rejected_order_not_found_forbids_current_status():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REJECTED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "order_not_found",
+             "current_status": "created"},
+        ))
+
+
+def test_transition_reason_length_capped():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(reason="x" * 256)))
+
+
+def test_transition_detail_length_capped():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REJECTED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "stale_status",
+             "current_status": "created", "detail": "x" * 256},
+        ))
 
 
 def test_total_wider_than_db_field_rejected():

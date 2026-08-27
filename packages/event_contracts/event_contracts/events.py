@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -15,6 +16,14 @@ EVENT_STOCK_CHANGED = "inventory.stock_changed.v1"
 EVENT_CUSTOMER_CHANGED = "identity.customer_changed.v1"
 EVENT_AUTHZ_CHANGED = "identity.authz_changed.v1"
 EVENT_SNAPSHOT_CONTROL = "operations.snapshot.control.v1"
+
+# order-transition command plane (operations issues a command, storefront applies it and
+# emits the outcome). These carry a command_id that ties the request to its outcome; the
+# concurrency guard is expected_status (checked by the sole writer under lock), not
+# aggregate.version, so version is not fenced against the data for these types.
+EVENT_ORDER_TRANSITION_REQUESTED = "orders.transition.requested.v1"
+EVENT_ORDER_TRANSITION_SUCCEEDED = "orders.transition.succeeded.v1"
+EVENT_ORDER_TRANSITION_REJECTED = "orders.transition.rejected.v1"
 
 # width matches the storefront DecimalField(max_digits=10, decimal_places=2); a value the
 # contract accepts must fit the DB, otherwise the projection write would fail downstream
@@ -134,6 +143,65 @@ class SnapshotControlData(BaseModel):
         return self
 
 
+class TransitionRejectCode(StrEnum):
+    stale_status = "stale_status"          # order was not at expected_status under lock
+    invalid_transition = "invalid_transition"  # target_status not reachable from current
+    order_not_found = "order_not_found"
+
+
+# free-text width matches storefront OrderStatusHistory.note so a reason/detail always fits
+NOTE_MAX = 255
+
+
+class OrderTransitionRequestedData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    command_id: uuid.UUID
+    actor_id: int = Field(gt=0)
+    order_id: int = Field(gt=0)
+    expected_status: OrderStatus
+    target_status: OrderStatus
+    reason: str = Field(default="", max_length=NOTE_MAX)
+
+    @model_validator(mode="after")
+    def _target_differs(self) -> "OrderTransitionRequestedData":
+        if self.expected_status == self.target_status:
+            raise ValueError("target_status must differ from expected_status")
+        return self
+
+
+class OrderTransitionSucceededData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    command_id: uuid.UUID
+    order_id: int = Field(gt=0)
+    from_status: OrderStatus
+    status: OrderStatus
+
+    @model_validator(mode="after")
+    def _status_advances(self) -> "OrderTransitionSucceededData":
+        if self.from_status == self.status:
+            raise ValueError("succeeded status must differ from from_status")
+        return self
+
+
+class OrderTransitionRejectedData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    command_id: uuid.UUID
+    order_id: int = Field(gt=0)
+    reject_code: TransitionRejectCode
+    # order_not_found carries no status; every other reject code is found under lock
+    current_status: OrderStatus | None = None
+    detail: str = Field(default="", max_length=NOTE_MAX)
+
+    @model_validator(mode="after")
+    def _current_status_matches_code(self) -> "OrderTransitionRejectedData":
+        not_found = self.reject_code == TransitionRejectCode.order_not_found
+        if not_found and self.current_status is not None:
+            raise ValueError("order_not_found must not carry current_status")
+        if not not_found and self.current_status is None:
+            raise ValueError(f"{self.reject_code} requires current_status")
+        return self
+
+
 _REGISTRY: dict[str, type[BaseModel]] = {
     EVENT_ORDER_CREATED: OrderCreatedData,
     EVENT_ORDER_STATUS_CHANGED: OrderStatusChangedData,
@@ -141,6 +209,9 @@ _REGISTRY: dict[str, type[BaseModel]] = {
     EVENT_CUSTOMER_CHANGED: CustomerChangedData,
     EVENT_AUTHZ_CHANGED: AuthzChangedData,
     EVENT_SNAPSHOT_CONTROL: SnapshotControlData,
+    EVENT_ORDER_TRANSITION_REQUESTED: OrderTransitionRequestedData,
+    EVENT_ORDER_TRANSITION_SUCCEEDED: OrderTransitionSucceededData,
+    EVENT_ORDER_TRANSITION_REJECTED: OrderTransitionRejectedData,
 }
 
 _AGGREGATE: dict[str, tuple[str, str]] = {
@@ -150,6 +221,17 @@ _AGGREGATE: dict[str, tuple[str, str]] = {
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
     EVENT_AUTHZ_CHANGED: ("authz", "subject_id"),
     EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
+    EVENT_ORDER_TRANSITION_REQUESTED: ("order", "order_id"),
+    EVENT_ORDER_TRANSITION_SUCCEEDED: ("order", "order_id"),
+    EVENT_ORDER_TRANSITION_REJECTED: ("order", "order_id"),
+}
+
+# who is allowed to originate an event: operations issues the request, the storefront (the
+# sole writer) issues the outcome. A mislabelled producer is a provenance violation.
+_REQUIRED_PRODUCER: dict[str, str] = {
+    EVENT_ORDER_TRANSITION_REQUESTED: "operations",
+    EVENT_ORDER_TRANSITION_SUCCEEDED: "storefront",
+    EVENT_ORDER_TRANSITION_REJECTED: "storefront",
 }
 
 
@@ -167,6 +249,11 @@ def parse_event(raw: dict) -> tuple[Envelope, BaseModel]:
         raise ContractError(f"aggregate.type {envelope.aggregate.type!r} != {agg_type!r}")
     if envelope.aggregate.id != str(getattr(data, id_field)):
         raise ContractError("aggregate.id does not match event data")
+    required_producer = _REQUIRED_PRODUCER.get(envelope.event_type)
+    if required_producer is not None and envelope.producer != required_producer:
+        raise ContractError(
+            f"{envelope.event_type} must be produced by {required_producer!r}, got {envelope.producer!r}"
+        )
     if envelope.event_type == EVENT_SNAPSHOT_CONTROL:
         if envelope.snapshot_run_id != data.run_id:
             raise ContractError("snapshot_run_id must match control run_id")
