@@ -119,19 +119,43 @@ class InboxEvent(models.Model):
 
 class OperationCommand(models.Model):
     class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        SUCCEEDED = "succeeded", "Succeeded"
-        REJECTED = "rejected", "Rejected"
+        PENDING = "pending", "Pending"            # created; requested event not yet on the broker
+        DISPATCHED = "dispatched", "Dispatched"   # requested event confirmed to the broker
+        TIMED_OUT = "timed_out", "Timed out"      # deadline passed, no outcome yet
+        DISPATCH_FAILED = "dispatch_failed", "Dispatch failed"  # relay exhausted retries -> DLQ
+        SUCCEEDED = "succeeded", "Succeeded"      # storefront applied it (succeeded outcome)
+        REJECTED = "rejected", "Rejected"         # storefront refused it (rejected outcome)
+
+    # only an applied outcome is terminal. Under at-least-once transport, neither a missing
+    # publisher confirm (dispatch_failed) nor an elapsed deadline (timed_out) proves the
+    # storefront did not receive the command, so both stay non-terminal and a late outcome may
+    # still finalize the command. They require alert/retry/reconciliation, not a terminal verdict.
+    TERMINAL = frozenset({Status.SUCCEEDED, Status.REJECTED})
 
     command_id = models.UUIDField(unique=True, default=uuid.uuid4)
     command_type = models.CharField(max_length=64)
+    correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
+    # the acting employee, taken only from the verified JWT subject, never the request body
+    actor_id = models.PositiveBigIntegerField()
+    # client-supplied dedup key; the unique constraint below makes creation idempotent
+    idempotency_key = models.CharField(max_length=200)
     target = models.CharField(max_length=64)
     payload = models.JSONField(default=dict)
-    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
     result_code = models.CharField(max_length=64, blank=True)
     result_detail = models.TextField(blank=True)
+    # a still-open command past this deadline is swept to timed_out
+    deadline_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["actor_id", "command_type", "target", "idempotency_key"],
+                name="uniq_operation_command_idempotency",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.command_type}:{self.command_id} ({self.status})"
