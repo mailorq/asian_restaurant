@@ -8,7 +8,7 @@ RUN pip install --upgrade pip && pip install /packages/event_contracts
 
 COPY services/order_operations/pyproject.toml /app/pyproject.toml
 COPY services/order_operations/ /app/
-RUN pip install .
+RUN pip install -r requirements.txt && pip install --no-deps .
 
 COPY services/order_operations/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

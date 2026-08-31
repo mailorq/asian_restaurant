@@ -15,14 +15,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && pip install -r requirements.txt && pip install --no-deps .
 
 RUN chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]
 
 # dev: adds tooling; command comes from the compose override
 FROM base AS dev
-RUN pip install ".[dev]"
+RUN pip install -r requirements-dev.txt
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
 # prod: gunicorn + uvicorn worker (asgi) behind nginx — async endpoints run concurrently

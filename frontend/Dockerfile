@@ -4,7 +4,7 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 # dev: vite dev server (hmr)
 FROM node:22-alpine AS dev
