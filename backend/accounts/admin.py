@@ -22,24 +22,32 @@ class CustomUserAdmin(UserAdmin):
         return super().formfield_for_manytomany(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
-        # name/phone and is_active are authorization/projection source state: route each
-        # change through its service so a version bump + outbox event happen atomically
+        # name/phone, is_active and is_superuser are authorization/projection source state:
+        # route each change through its service so a version bump + outbox event happen
+        # atomically. is_superuser grants operations access, so it must revoke like a role
         changed = set(form.changed_data)
         db = User.objects.get(pk=obj.pk) if change else None
         route_profile = bool(db and (_PROFILE_FIELDS & changed))
         route_active = bool(db and "is_active" in changed)
-        new_name, new_phone, new_active = obj.first_name, obj.phone, obj.is_active
+        route_superuser = bool(db and "is_superuser" in changed)
+        new_name, new_phone = obj.first_name, obj.phone
+        new_active, new_superuser = obj.is_active, obj.is_superuser
         if route_profile:
             obj.first_name, obj.phone = db.first_name, db.phone
         if route_active:
             obj.is_active = db.is_active
+        if route_superuser:
+            obj.is_superuser = db.is_superuser
         super().save_model(request, obj, form, change)
         if route_profile:
             accounts_service.set_customer_profile(obj.pk, name=new_name, phone=new_phone)
-        if route_active:
+        if route_active or route_superuser:
             from employee import service as employee_service
-            employee_service.set_active(actor=request.user, target=obj, active=new_active)
-        if route_profile or route_active:
+            if route_superuser:
+                employee_service.set_superuser(actor=request.user, target=obj, is_superuser=new_superuser)
+            if route_active:
+                employee_service.set_active(actor=request.user, target=obj, active=new_active)
+        if route_profile or route_active or route_superuser:
             obj.refresh_from_db()
         if not change:
             accounts_service.emit_state(obj)

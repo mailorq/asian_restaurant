@@ -27,7 +27,7 @@ def _msg_request(actor):
     return req
 
 
-# --- role service: correctness, idempotency, active state -------------------
+# role service: correctness, idempotency, active state
 def test_grant_bumps_version_audits_and_emits(user, employee_user):
     start = user.authz_version
     service.set_employee_role(actor=employee_user, target=user, grant=True)
@@ -79,7 +79,7 @@ def test_deactivating_customer_emits_no_authz(user):
     assert not _authz_rows(user.id).exists()
 
 
-# --- Admin: role membership & is_active are not editable in place -----------
+# Admin: role membership & is_active are not editable in place
 def test_admin_cannot_grant_employee_role(user, superuser):
     ma = CustomUserAdmin(User, dj_admin.site)
     group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
@@ -126,14 +126,43 @@ def test_admin_is_active_change_routes_through_service(employee_user, superuser)
     assert _authz_rows(employee_user.id).latest("created_at").payload["user_active"] is False
 
 
-# --- superuser is an operations employee (decision A) -----------------------
+def test_admin_is_superuser_change_routes_through_service(user, superuser):
+    ma = CustomUserAdmin(User, dj_admin.site)
+    start = user.authz_version
+    user.is_superuser = True  # what the admin form submitted
+    ma.save_model(_msg_request(superuser), user, SimpleNamespace(changed_data=["is_superuser"]), change=True)
+    user.refresh_from_db()
+    assert user.is_superuser is True and user.authz_version == start + 1
+    assert _authz_rows(user.id).latest("created_at").payload["role_active"] is True
+
+
+def test_revoking_superuser_emits_revocation(superuser, employee_user):
+    start = superuser.authz_version
+    service.set_superuser(actor=employee_user, target=superuser, is_superuser=False)
+    superuser.refresh_from_db()
+    assert superuser.is_superuser is False and superuser.authz_version == start + 1
+    row = _authz_rows(superuser.id).latest("created_at")
+    assert row.payload["role_active"] is False
+    assert row.aggregate_version == superuser.authz_version
+    assert EmployeeRoleAudit.objects.filter(target=superuser, action="revoke").exists()
+
+
+def test_repeated_superuser_change_is_a_noop(superuser, employee_user):
+    start = superuser.authz_version
+    service.set_superuser(actor=employee_user, target=superuser, is_superuser=True)
+    superuser.refresh_from_db()
+    assert superuser.authz_version == start
+    assert not _authz_rows(superuser.id).exists()
+
+
+# superuser is an operations employee (decision A)
 def test_backfill_emits_authz_for_superuser(superuser):
     call_command("emit_authz_state")
     row = _authz_rows(superuser.id).latest("created_at")
     assert row.payload["role_active"] is True and row.payload["user_active"] is True
 
 
-# --- CSRF on session-authenticated POSTs ------------------------------------
+# CSRF on session-authenticated POSTs
 def test_employee_token_and_logout_enforce_csrf(employee_user):
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(employee_user)
