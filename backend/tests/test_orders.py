@@ -1,6 +1,8 @@
 import json
 
 import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
 
 from cart import service as cart_service
 from orders import service as order_service
@@ -36,6 +38,82 @@ def test_checkout_creates_order_and_decrements_stock(client, user, make_product,
     assert product.stock_quantity == 8  # 10 - 2
     assert cart_service.read_sync(cart_service.user_key(user.id)) == ({}, 0)  # cart cleared
     assert OrderOutbox.objects.filter(aggregate_id=str(data["id"]), event_type="order.created").exists()
+
+
+def test_cancel_restores_stock(user, make_product, seed_cart):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 3}, version=1)
+    order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-cancel-1")
+    product.refresh_from_db()
+    assert product.stock_quantity == 7
+
+    order_service.transition(order, "cancelled", changed_by=user, expected_status="created")
+
+    product.refresh_from_db()
+    assert product.stock_quantity == 10
+
+
+def test_cancel_restores_stock_only_once(user, make_product, seed_cart):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 3}, version=1)
+    order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-cancel-2")
+    order_service.transition(order, "cancelled", changed_by=user)
+
+    with pytest.raises(CheckoutError) as exc:
+        order_service.transition(order, "cancelled", changed_by=user)
+    assert exc.value.code == "invalid_transition"
+
+    product.refresh_from_db()
+    assert product.stock_quantity == 10
+
+
+def test_checkout_removes_only_purchased_items_when_cart_changed_midway(
+    user, make_product, seed_cart, monkeypatch
+):
+    bought = make_product(price="100.00", stock=10)
+    added = make_product(price="50.00", stock=10)
+    key = cart_service.user_key(user.id)
+    real_read = cart_service.read_sync
+
+    seed_cart(user.id, {bought.id: 2, added.id: 1}, version=2)
+    monkeypatch.setattr(cart_service, "read_sync", lambda k: ({bought.id: 2}, 1))
+
+    order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-mid-01")
+
+    items, _version = real_read(key)
+    assert bought.id not in items  # purchased items never survive to be sold again
+    assert items == {added.id: 1}  # the concurrent addition is preserved
+
+
+def test_retry_after_lost_response_clears_the_uncleared_cart(user, make_product, seed_cart):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    key = cart_service.user_key(user.id)
+    order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-retry-1")
+
+    seed_cart(user.id, {product.id: 2}, version=order.source_cart_version)
+
+    again = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-retry-1")
+
+    assert again.pk == order.pk
+    assert cart_service.read_sync(key) == ({}, 0)
+    product.refresh_from_db()
+    assert product.stock_quantity == 8  # the replay never decrements stock twice
+
+
+def test_retry_does_not_wipe_a_rebuilt_cart_at_the_same_version(user, make_product, seed_cart):
+    product = make_product(price="100.00", stock=10)
+    other = make_product(price="70.00", stock=10)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    key = cart_service.user_key(user.id)
+    order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-rebuild-1")
+
+    seed_cart(user.id, {other.id: 1}, version=order.source_cart_version)
+
+    order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-rebuild-1")
+
+    items, _v = cart_service.read_sync(key)
+    assert items == {other.id: 1}
 
 
 def test_checkout_requires_auth(client, user, make_product, seed_cart):
@@ -224,3 +302,19 @@ def test_idempotency_key_scoped_per_user(client, make_product, seed_cart, django
 
     assert order1 != order2  # same key, different owners -> two distinct orders
     assert Order.objects.filter(idempotency_key="shared-idem-key").count() == 2
+
+
+def test_live_seeding_refuses_second_run(user, make_product, seed_cart):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 1}, version=1)
+    order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-seed-1")
+
+    # re-emitting at an already-projected version would dead-letter every event
+    with pytest.raises(CommandError):
+        call_command("emit_source_state")
+
+    call_command("emit_source_state", "--force-live")  # deliberate override still works
+
+
+def test_live_seeding_allowed_on_empty_outbox():
+    call_command("emit_source_state")  # nothing emitted yet: bootstrap is safe

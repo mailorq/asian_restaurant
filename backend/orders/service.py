@@ -63,7 +63,9 @@ def _create_order(
     source_cart_id = f"u:{user.id}"
     locked = {
         p.id: p
-        for p in Product.objects.select_for_update().filter(id__in=list(cart_items.keys()))
+        for p in Product.objects.select_for_update()
+        .filter(id__in=list(cart_items.keys()))
+        .order_by("id")
     }
 
     problems = []
@@ -138,11 +140,22 @@ def _create_order(
     return order
 
 
+def _recover_uncleared_cart(user, order: Order) -> None:
+    key = cart_service.user_key(user.id)
+    items, version = cart_service.read_sync(key)
+    if version != order.source_cart_version or not items:
+        return
+    if items != {item.product_id: item.quantity for item in order.items.all()}:
+        return
+    cart_service.clear_sync(key, version)
+
+
 def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, recipient_name: str = "") -> Order:
     source_cart_id = f"u:{user.id}"
 
     existing = Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
     if existing is not None:
+        _recover_uncleared_cart(user, existing)
         return existing
 
     key = cart_service.user_key(user.id)
@@ -152,6 +165,7 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
 
     existing = Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
     if existing is not None:
+        _recover_uncleared_cart(user, existing)
         return existing
 
     geo_result = _geocode_safe(raw_address)  # external http, kept out of the transaction
@@ -167,13 +181,36 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
             or Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
         )
         if existing is not None:
+            _recover_uncleared_cart(user, existing)
             return existing
         raise
 
-    # CAS clear: only wipe the cart if it is still at the version we checked out,
-    # so an item added mid-checkout is not silently lost.
-    cart_service.clear_sync(key, cart_version)
+    # remove exactly what was bought: an item added mid-checkout stays, and the purchased
+    # items never survive to be sold a second time by the next checkout
+    cart_service.remove_purchased_sync(key, cart_items)
     return order
+
+
+def _restore_stock(order: Order, staff=None) -> None:
+    items = list(order.items.all())
+    if not items:
+        return
+    products = {
+        p.id: p
+        for p in Product.objects.select_for_update()
+        .filter(id__in=[item.product_id for item in items])
+        .order_by("id")
+    }
+    for item in items:
+        product = products.get(item.product_id)
+        if product is None:
+            continue
+        inventory.record_stock_change(
+            product,
+            product.stock_quantity + item.quantity,
+            reason=f"cancelled order #{order.id}",
+            staff=staff,
+        )
 
 
 @transaction.atomic
@@ -183,6 +220,9 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "", e
         raise CheckoutError("stale_order", f"Заказ уже в статусе «{locked.get_status_display()}»")
     if not locked.can_transition_to(new_status):
         raise CheckoutError("invalid_transition", f"Недопустимый переход {locked.status} → {new_status}")
+
+    if new_status == Order.Status.CANCELLED:
+        _restore_stock(locked, staff=changed_by)
 
     previous = locked.status
     locked.status = new_status
