@@ -1,6 +1,6 @@
 import uuid
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
 from accounts import service as accounts_service
@@ -10,18 +10,33 @@ from menu.models import Product
 from orders import service as order_service
 from orders.models import Order, OrderOutbox
 
+LIVE_EVENT_TYPES = ["inventory.stock_changed", "identity.customer_changed", "order.created"]
+
 
 class Command(BaseCommand):
     help = "Emit current product/customer/order state through the outbox: --snapshot for a reconciliation run, else live seeding."
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--snapshot", action="store_true", help="emit a fenced snapshot run (start/aggregates/completed)")
+        parser.add_argument(
+            "--force-live",
+            action="store_true",
+            help="re-run live seeding against an already-seeded projection (dead-letters events)",
+        )
 
     def handle(self, *args, **options) -> None:
         if options["snapshot"]:
             self._snapshot_run()
-        else:
-            self._live()
+            return
+
+        already = OrderOutbox.objects.filter(snapshot=False, event_type__in=LIVE_EVENT_TYPES).exists()
+        if already and not options["force_live"]:
+            raise CommandError(
+                "these aggregates were already emitted, so a live re-run would dead-letter every "
+                "event at a version the projection already holds. Use --snapshot to reconcile an "
+                "existing projection, or --force-live when seeding a known-empty one."
+            )
+        self._live()
 
     def _live(self) -> None:
         products = customers = orders = 0
