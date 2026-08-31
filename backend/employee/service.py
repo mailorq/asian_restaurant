@@ -42,6 +42,23 @@ def set_employee_role(actor, target, grant: bool):
 
 
 @transaction.atomic
+def set_superuser(actor, target, is_superuser: bool):
+    user = get_user_model().objects.select_for_update().get(pk=target.pk)
+    if user.is_superuser == is_superuser:
+        return user
+    user.is_superuser = is_superuser
+    user.authz_version += 1
+    user.save(update_fields=["is_superuser", "authz_version"])
+    EmployeeRoleAudit.objects.create(
+        actor=actor,
+        target=user,
+        action=EmployeeRoleAudit.Action.GRANT if is_superuser else EmployeeRoleAudit.Action.REVOKE,
+    )
+    _emit_authz(user)
+    return user
+
+
+@transaction.atomic
 def set_active(actor, target, active: bool):
     # is_active is authorization state: deactivating an operations-capable user must revoke
     # their access, so bump the version and emit — customers carry no operations access

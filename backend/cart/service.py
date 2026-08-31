@@ -326,3 +326,54 @@ def clear_sync(key: str, expected_version: int) -> bool:
     except RedisError as exc:
         raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
     return bool(cleared)
+
+
+# Subtract exactly the purchased quantities instead of clearing the whole cart. an
+# all-or-nothing CAS clear leaves every purchased item in the cart when the version moved
+# during checkout (an item added mid-checkout), so the next checkout would sell them again
+# KEYS[1] = cart key
+# ARGV[1] = ttl seconds, ARGV[2..] = flattened (product id, purchased qty) pairs
+# returns the resulting version (0 when the cart was dropped)
+_REMOVE_PURCHASED_LUA = """
+local key = KEYS[1]
+local i = 2
+local changed = false
+while i < #ARGV do
+  local pid = ARGV[i]
+  local left = tonumber(redis.call('HGET', key, pid))
+  if left then
+    left = left - tonumber(ARGV[i + 1])
+    if left > 0 then
+      redis.call('HSET', key, pid, left)
+    else
+      redis.call('HDEL', key, pid)
+    end
+    changed = true
+  end
+  i = i + 2
+end
+if redis.call('HLEN', key) <= 1 then
+  redis.call('DEL', key)
+  return 0
+end
+local nv = tonumber(redis.call('HGET', key, 'v')) or 0
+if changed then
+  nv = nv + 1
+  redis.call('HSET', key, 'v', nv)
+  redis.call('EXPIRE', key, tonumber(ARGV[1]))
+end
+return nv
+"""
+
+
+def remove_purchased_sync(key: str, items: dict[int, int]) -> int:
+    if not items:
+        return 0
+    argv: list[int] = [CART_TTL]
+    for product_id, quantity in items.items():
+        argv += [product_id, quantity]
+    try:
+        version = _sync_redis().eval(_REMOVE_PURCHASED_LUA, 1, key, *argv)
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
+    return int(version)
