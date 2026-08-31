@@ -19,6 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    networks: [cache]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -50,6 +51,7 @@ services:
       context: ./backend
       target: prod
     env_file: [.env]
+    networks: [default, cache]
     environment:
       PROMETHEUS_MULTIPROC_DIR: /app/.prometheus
       IDENTITY_JWT_PRIVATE_KEY_FILE: /run/identity/jwt_private_key.pem
@@ -101,7 +103,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # --- independent operations service (own DB, own credentials) ---
+  # independent operations service (own DB, own credentials)
   operations-db:
     image: postgres:16-alpine
     environment:
@@ -189,7 +191,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=15d
@@ -202,6 +204,11 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+networks:
+  default:
+  cache:
+    internal: true
 
 volumes:
   pgdata:

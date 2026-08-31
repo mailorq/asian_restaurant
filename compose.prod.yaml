@@ -65,6 +65,9 @@ services:
     entrypoint: ["bash", "/provision.sh"]
     restart: "no"
 
+  prometheus:
+    ports: !override ["127.0.0.1:9090:9090"]
+
   backend:
     # signing key is a read-only Docker secret file, never an env var; dev mount dropped and
     # base `env_file: [.env]` reset so the production render never depends on repo-root .env

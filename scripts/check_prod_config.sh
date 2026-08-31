@@ -54,6 +54,9 @@ grep -Eq "IDENTITY_JWT_PRIVATE_KEY:[[:space:]]*[^\"'[:space:]]" <<<"$rendered" &
 # legacy in-storefront projection consumer must not run in production
 grep -q "run_ops_consumer" <<<"$rendered" && { echo "FAIL: legacy ops consumer present in production"; fail=1; }
 
+grep -B3 -A3 'published: "9090"' <<<"$rendered" | grep -q 'host_ip: 127.0.0.1' || {
+  echo "FAIL: prometheus 9090 not bound to loopback"; fail=1; }
+
 # storefront Django processes (backend + relay) start under the production guard; ops services too
 [ "$(grep -c 'DJANGO_PRODUCTION' <<<"$rendered")" -ge 2 ] || { echo "FAIL: DJANGO_PRODUCTION not set on all storefront services"; fail=1; }
 [ "$(grep -c 'OPERATIONS_PRODUCTION' <<<"$rendered")" -ge 3 ] || { echo "FAIL: OPERATIONS_PRODUCTION not set on all ops services"; fail=1; }
