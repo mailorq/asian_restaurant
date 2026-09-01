@@ -128,10 +128,14 @@ then applying the outcome in a second step would leave the inbox row committed w
 step fails: the redelivery becomes a no-op and the command never completes. There must be exactly
 one inbox mechanism per event id:
 
+The lock also re-checks provenance: an outcome is applied only when its `causation_id` equals the
+command's own `request_event_id`. A misrouted or forged outcome fails this check and the inbox
+write rolls back with it, so the redelivery is handled again rather than silently accepted.
+
 ```
 parse -> single transaction.atomic():
            inbox dedup (once)
-           outcome event -> apply_transition_outcome() under lock
+           outcome event -> apply_transition_outcome() under lock, causation_id checked
            other event   -> projection apply without a second inbox write
          commit -> ack
 ```

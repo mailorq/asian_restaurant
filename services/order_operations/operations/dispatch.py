@@ -24,7 +24,11 @@ def handle(envelope: Envelope, data) -> bool:
     if not projection.remember(envelope):
         return False
     if envelope.event_type in OUTCOME_EVENTS:
-        apply_transition_outcome(data, correlation_id=envelope.correlation_id)
+        apply_transition_outcome(
+            data,
+            correlation_id=envelope.correlation_id,
+            causation_id=envelope.causation_id,
+        )
     else:
         projection.project(envelope, data)
     return True

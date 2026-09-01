@@ -130,7 +130,7 @@ def _assert_outcome_matches_intent(command: OperationCommand, data, success: boo
         raise OutcomeMismatch("invalid_transition must report the expected_status")
 
 
-def apply_transition_outcome(data, *, correlation_id) -> OperationCommand:
+def apply_transition_outcome(data, *, correlation_id, causation_id) -> OperationCommand:
     """Finalise a command from a validated succeeded/rejected outcome; idempotent."""
     if isinstance(data, OrderTransitionSucceededData):
         success = True
@@ -151,6 +151,9 @@ def apply_transition_outcome(data, *, correlation_id) -> OperationCommand:
 
     with transaction.atomic():
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        # the outcome must descend from this command's own request event, so a misrouted or forged outcome cannot finalise it
+        if str(causation_id) != str(locked.request_event_id):
+            raise OutcomeMismatch("causation_id does not match command request_event_id")
         _assert_outcome_matches_intent(locked, data, success)
         if locked.status in OperationCommand.TERMINAL:
             return locked  # terminal is final; a redelivered outcome is a no-op

@@ -125,3 +125,41 @@ def test_projection_event_still_flows_through_the_dispatcher():
 
     assert InventoryProjection.objects.get(product_code="dish_1").stock_quantity == 7
     assert InboxEvent.objects.count() == 1
+
+
+def test_outcome_with_foreign_causation_rolls_back_inbox():
+    command = _command()
+    payload = _outcome_env(command)
+    payload["causation_id"] = str(uuid.uuid4())
+    envelope, data = parse_event(payload)
+
+    with pytest.raises(OutcomeMismatch):
+        dispatch.handle(envelope, data)
+
+    assert InboxEvent.objects.count() == 0
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
+
+
+def test_outcome_without_causation_rolls_back_inbox():
+    command = _command()
+    payload = _outcome_env(command)
+    payload.pop("causation_id")
+    envelope, data = parse_event(payload)
+
+    with pytest.raises(OutcomeMismatch):
+        dispatch.handle(envelope, data)
+    assert InboxEvent.objects.count() == 0
+
+
+def test_redelivery_with_correct_causation_completes_after_a_rejected_one():
+    command = _command()
+    bad = _outcome_env(command)
+    bad["causation_id"] = str(uuid.uuid4())
+    envelope, data = parse_event(bad)
+    with pytest.raises(OutcomeMismatch):
+        dispatch.handle(envelope, data)
+
+    envelope, data = parse_event(_outcome_env(command))
+    assert dispatch.handle(envelope, data) is True
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.SUCCEEDED
+    assert InboxEvent.objects.count() == 1

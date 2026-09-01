@@ -80,29 +80,29 @@ def test_timed_out_then_late_success_finalizes_succeeded():
     command, _ = _create()
     commands.mark_timed_out(command)
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.TIMED_OUT
-    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.SUCCEEDED  # late outcome wins, not stuck
 
 
 def test_dispatched_then_success():
     command, _ = _create()
     commands.mark_dispatched(command)
-    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.SUCCEEDED
 
 
 def test_rejected_outcome_records_code_and_detail():
     command, _ = _create()
     commands.mark_dispatched(command)
-    result = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.REJECTED
     assert result.result_code == "stale_status" and result.result_detail == "x"
 
 
 def test_outcome_idempotent_on_terminal():
     command, _ = _create()
-    commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id)
-    again = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id)
+    commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
+    again = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert again.status == OperationCommand.Status.SUCCEEDED
 
 
@@ -112,14 +112,14 @@ def test_dispatch_failed_then_late_success_finalizes_succeeded():
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.DISPATCH_FAILED
     # a missing publisher confirm is unknown delivery, not proof of non-delivery: a late outcome
     # must still finalise the command rather than leave it stuck
-    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.SUCCEEDED
 
 
 def test_dispatch_failed_then_late_reject_finalizes_rejected():
     command, _ = _create()
     commands.mark_dispatch_failed(command)
-    result = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.REJECTED
 
 
@@ -147,7 +147,7 @@ def test_succeeded_outcome_wrong_from_status_raises():
     bad = OrderTransitionSucceededData(command_id=command.command_id, order_id=int(command.target),
                                        from_status="preparing", status="confirmed")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id, causation_id=command.request_event_id)
 
 
 def test_succeeded_outcome_wrong_target_does_not_finalize():
@@ -155,7 +155,7 @@ def test_succeeded_outcome_wrong_target_does_not_finalize():
     bad = OrderTransitionSucceededData(command_id=command.command_id, order_id=int(command.target),
                                        from_status="created", status="cancelled")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
 
 
@@ -164,7 +164,7 @@ def test_rejected_stale_current_equals_expected_raises():
     bad = OrderTransitionRejectedData(command_id=command.command_id, order_id=int(command.target),
                                       reject_code="stale_status", current_status="created")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id, causation_id=command.request_event_id)
 
 
 def test_rejected_invalid_transition_current_must_equal_expected():
@@ -172,21 +172,21 @@ def test_rejected_invalid_transition_current_must_equal_expected():
     bad = OrderTransitionRejectedData(command_id=command.command_id, order_id=int(command.target),
                                       reject_code="invalid_transition", current_status="preparing")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id, causation_id=command.request_event_id)
 
 
 def test_rejected_invalid_transition_matching_expected_ok():
     command, _ = _create()  # expected_status = created
     ok = OrderTransitionRejectedData(command_id=command.command_id, order_id=int(command.target),
                                      reject_code="invalid_transition", current_status="created")
-    result = commands.apply_transition_outcome(ok, correlation_id=command.correlation_id)
+    result = commands.apply_transition_outcome(ok, correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.REJECTED
 
 
 def test_outcome_correlation_mismatch_raises():
     command, _ = _create()
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(_succeeded(command), correlation_id=uuid.uuid4())
+        commands.apply_transition_outcome(_succeeded(command), correlation_id=uuid.uuid4(), causation_id=command.request_event_id)
 
 
 def test_outcome_unknown_command_raises():
@@ -194,7 +194,7 @@ def test_outcome_unknown_command_raises():
     ghost = OrderTransitionSucceededData(command_id=uuid.uuid4(), order_id=1,
                                          from_status="created", status="confirmed")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(ghost, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(ghost, correlation_id=command.correlation_id, causation_id=command.request_event_id)
 
 
 def test_outcome_order_id_mismatch_raises():
@@ -202,4 +202,31 @@ def test_outcome_order_id_mismatch_raises():
     bad = OrderTransitionSucceededData(command_id=command.command_id, order_id=999,
                                        from_status="created", status="confirmed")
     with pytest.raises(OutcomeMismatch):
-        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id)
+        commands.apply_transition_outcome(bad, correlation_id=command.correlation_id, causation_id=command.request_event_id)
+
+
+def test_outcome_with_foreign_causation_is_rejected():
+    command, _ = _create()
+    with pytest.raises(OutcomeMismatch):
+        commands.apply_transition_outcome(
+            _succeeded(command), correlation_id=command.correlation_id, causation_id=uuid.uuid4()
+        )
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
+
+
+def test_outcome_without_causation_is_rejected():
+    command, _ = _create()
+    with pytest.raises(OutcomeMismatch):
+        commands.apply_transition_outcome(
+            _succeeded(command), correlation_id=command.correlation_id, causation_id=None
+        )
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
+
+
+def test_outcome_with_matching_causation_finalizes():
+    command, _ = _create()
+    result = commands.apply_transition_outcome(
+        _succeeded(command), correlation_id=command.correlation_id,
+        causation_id=command.request_event_id,
+    )
+    assert result.status == OperationCommand.Status.SUCCEEDED
