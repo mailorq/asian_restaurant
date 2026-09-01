@@ -37,7 +37,7 @@ class OutcomeMismatch(Exception):
 
 
 def _request_payload(data: OrderTransitionRequestedData) -> dict:
-    # the identity we compare on a duplicate; command_id is excluded because it is server-minted
+    # intent compared on a duplicate, without server-minted or per-attempt fields
     return {
         "order_id": data.order_id,
         "expected_status": str(data.expected_status),
@@ -47,8 +47,8 @@ def _request_payload(data: OrderTransitionRequestedData) -> dict:
 
 
 def create_transition_command(
-    *, actor_id: int, order_id: int, expected_status: str, target_status: str,
-    idempotency_key: str, reason: str = "",
+    *, actor_id: int, actor_authz_version: int, order_id: int, expected_status: str,
+    target_status: str, idempotency_key: str, reason: str = "",
 ) -> tuple[OperationCommand, bool]:
     # validate the dedup key before any write so an oversized key is a controlled 4xx, not a
     # DataError 500 once it reaches the column
@@ -59,10 +59,13 @@ def create_transition_command(
         raise ValueError(f"idempotency_key must be at most {IDEMPOTENCY_KEY_MAX} characters")
     target = str(order_id)
     command_id = uuid.uuid4()
+    # stored deadline and the one carried in the message are the same instant
+    deadline = timezone.now() + COMMAND_TTL
     # validate the intent against the contract before persisting anything
     data = OrderTransitionRequestedData(
-        command_id=command_id, actor_id=actor_id, order_id=order_id,
-        expected_status=expected_status, target_status=target_status, reason=reason,
+        command_id=command_id, actor_id=actor_id, actor_authz_version=actor_authz_version,
+        expires_at=deadline, order_id=order_id, expected_status=expected_status,
+        target_status=target_status, reason=reason,
     )
     request = _request_payload(data)
 
@@ -76,14 +79,13 @@ def create_transition_command(
     try:
         with transaction.atomic():
             command = OperationCommand.objects.create(
-                command_id=command_id, payload=request, deadline_at=timezone.now() + COMMAND_TTL,
-                **identity,
+                command_id=command_id, payload=request, deadline_at=deadline, **identity,
             )
             OperationsOutbox.objects.create(
                 correlation_id=command.correlation_id,
                 routing_key=REQUESTED_ROUTING_KEY,
                 event_type=EVENT_ORDER_TRANSITION_REQUESTED,
-                payload={"command_id": str(command_id), "actor_id": actor_id, **request},
+                payload=data.model_dump(mode="json"),
             )
             OperationAuditLog.objects.create(
                 actor_id=str(actor_id), actor_role=ACTOR_ROLE, action=COMMAND_TYPE_TRANSITION,

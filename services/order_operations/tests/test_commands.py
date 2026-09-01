@@ -11,10 +11,11 @@ from operations.models import OperationAuditLog, OperationCommand, OperationsOut
 pytestmark = pytest.mark.django_db
 
 
-def _create(actor_id=42, order_id=1, expected="created", target="confirmed", key="k1", reason=""):
+def _create(actor_id=42, order_id=1, expected="created", target="confirmed", key="k1", reason="",
+            authz_version=3):
     return create_transition_command(
-        actor_id=actor_id, order_id=order_id, expected_status=expected,
-        target_status=target, idempotency_key=key, reason=reason,
+        actor_id=actor_id, actor_authz_version=authz_version, order_id=order_id,
+        expected_status=expected, target_status=target, idempotency_key=key, reason=reason,
     )
 
 
