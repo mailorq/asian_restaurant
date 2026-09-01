@@ -17,6 +17,15 @@ groups:
           summary: "poison events in an operations DLQ ({{ $labels.queue }})"
           description: "{{ $value }} message(s) in {{ $labels.queue }} — investigate rejected events."
 
+      - alert: CommandDLQNotEmpty
+        # the command queues live on the storefront vhost and do not match operations.*
+        expr: rabbitmq_queue_messages{queue=~"commands\..*dlq"} > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "poison commands in {{ $labels.queue }}"
+          description: "{{ $value }} message(s) in {{ $labels.queue }}, order transitions are not being applied."
+
       - alert: OperationsRetryQueueGrowing
         expr: rabbitmq_queue_messages{queue=~"operations.*retry"} > 20
         for: 5m
