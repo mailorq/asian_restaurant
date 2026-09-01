@@ -135,6 +135,8 @@ class OperationCommand(models.Model):
     command_id = models.UUIDField(unique=True, default=uuid.uuid4)
     command_type = models.CharField(max_length=64)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
+    # envelope id of the request event, reused on every publish attempt
+    request_event_id = models.UUIDField(unique=True)
     # the acting employee, taken only from the verified JWT subject, never the request body
     actor_id = models.PositiveBigIntegerField()
     # client-supplied dedup key; the unique constraint below makes creation idempotent
@@ -168,6 +170,14 @@ class OperationsOutbox(models.Model):
 
     event_id = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
+    causation_id = models.UUIDField(null=True, blank=True)
+    command = models.OneToOneField(
+        "OperationCommand", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="outbox_event",
+    )
+    producer = models.CharField(max_length=32, default="operations")
+    aggregate_id = models.CharField(max_length=64, default="")
+    aggregate_version = models.PositiveIntegerField(default=1)
     routing_key = models.CharField(max_length=64)
     event_type = models.CharField(max_length=64)
     schema_version = models.PositiveSmallIntegerField(default=1)

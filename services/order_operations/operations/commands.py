@@ -24,6 +24,7 @@ from operations.models import OperationAuditLog, OperationCommand, OperationsOut
 COMMAND_TYPE_TRANSITION = "orders.transition"
 REQUESTED_ROUTING_KEY = "orders.transition.requested"
 ACTOR_ROLE = "restaurant_employee"
+PRODUCER = "operations"
 COMMAND_TTL = timedelta(seconds=30)
 IDEMPOTENCY_KEY_MAX = 200
 
@@ -59,6 +60,7 @@ def create_transition_command(
         raise ValueError(f"idempotency_key must be at most {IDEMPOTENCY_KEY_MAX} characters")
     target = str(order_id)
     command_id = uuid.uuid4()
+    request_event_id = uuid.uuid4()
     # stored deadline and the one carried in the message are the same instant
     deadline = timezone.now() + COMMAND_TTL
     # validate the intent against the contract before persisting anything
@@ -79,10 +81,16 @@ def create_transition_command(
     try:
         with transaction.atomic():
             command = OperationCommand.objects.create(
-                command_id=command_id, payload=request, deadline_at=deadline, **identity,
+                command_id=command_id, request_event_id=request_event_id, payload=request,
+                deadline_at=deadline, **identity,
             )
             OperationsOutbox.objects.create(
+                event_id=request_event_id,
                 correlation_id=command.correlation_id,
+                command=command,
+                producer=PRODUCER,
+                aggregate_id=target,
+                aggregate_version=1,
                 routing_key=REQUESTED_ROUTING_KEY,
                 event_type=EVENT_ORDER_TRANSITION_REQUESTED,
                 payload=data.model_dump(mode="json"),
