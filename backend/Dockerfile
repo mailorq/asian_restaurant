@@ -14,8 +14,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN pip install --upgrade pip && pip install -r requirements.txt && pip install --no-deps .
+# build context is the repository root (needs packages/ and backend/)
+COPY packages/event_contracts /packages/event_contracts
+COPY backend/ /app/
+RUN pip install --upgrade pip && pip install -r requirements.txt     && pip install --no-deps /packages/event_contracts && pip install --no-deps .
 
 RUN chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]

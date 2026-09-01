@@ -48,7 +48,8 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: prod
     env_file: [.env]
     networks: [default, cache]
@@ -74,7 +75,8 @@ services:
   # transactional outbox relay: publishes pending order events to RabbitMQ
   relay:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: prod
     env_file: [.env]
     command: python manage.py publish_outbox --loop
@@ -90,7 +92,8 @@ services:
   # ops runtime: consumes order events and builds the RestaurantOrder projection
   ops:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: prod
     env_file: [.env]
     command: python manage.py run_ops_consumer
