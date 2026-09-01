@@ -34,6 +34,7 @@ def _headers(row: OrderOutbox) -> dict:
     return {
         "event_id": str(row.event_id),
         "correlation_id": str(row.correlation_id),
+        "causation_id": str(row.causation_id) if row.causation_id else None,
         "schema_version": row.schema_version,
         "aggregate_version": row.aggregate_version,
         # domain occurred_at travels with the event so downstream never re-times it

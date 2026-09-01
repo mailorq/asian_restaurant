@@ -45,7 +45,7 @@ def test_conflict_is_routed_to_dlq_with_metric(monkeypatch):
     def boom(envelope, data):
         raise mod.projection.ProjectionConflict("order", envelope.aggregate.id, envelope.aggregate.version, envelope.event_id)
 
-    monkeypatch.setattr(mod.projection, "apply", boom)
+    monkeypatch.setattr(mod.dispatch, "handle", boom)
     before = _metric("conflict")
 
     cmd._on_message(ch, _method(), _props(), _status_body())
@@ -62,7 +62,7 @@ def test_out_of_order_is_retried_with_metric(monkeypatch):
     def out_of_order(envelope, data):
         raise mod.projection.OutOfOrder("no projection yet")
 
-    monkeypatch.setattr(mod.projection, "apply", out_of_order)
+    monkeypatch.setattr(mod.dispatch, "handle", out_of_order)
     before = _metric("out_of_order")
 
     cmd._on_message(ch, _method(), _props(), _status_body())
@@ -77,7 +77,7 @@ def test_out_of_order_is_retried_with_metric(monkeypatch):
 def test_poison_message_goes_to_dlq(monkeypatch):
     cmd = mod.Command()
     ch = MagicMock()
-    monkeypatch.setattr(mod.projection, "apply", MagicMock())
+    monkeypatch.setattr(mod.dispatch, "handle", MagicMock())
 
     cmd._on_message(ch, _method(), _props(), b"{not json")
 

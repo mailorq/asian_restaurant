@@ -293,3 +293,59 @@ def _publish_and_get_envelope():
     cmd._on_message(ch, method, props, body)
     _, kwargs = cmd.publish_channel.basic_publish.call_args
     return json.loads(kwargs["body"])
+
+
+def _outcome_props(event_type, causation_id):
+    return SimpleNamespace(
+        headers={
+            "event_id": str(uuid.uuid4()),
+            "correlation_id": str(uuid.uuid4()),
+            "causation_id": causation_id,
+            "aggregate_version": 4,
+            "occurred_at": OCCURRED_AT,
+            "snapshot": False,
+            "snapshot_run_id": None,
+        },
+        message_id=str(uuid.uuid4()),
+        correlation_id=str(uuid.uuid4()),
+        type=event_type,
+    )
+
+
+def test_bridge_maps_transition_succeeded_and_keeps_causation():
+    command_id = str(uuid.uuid4())
+    causation = str(uuid.uuid4())
+    legacy = {"command_id": command_id, "order_id": 42, "from_status": "created", "status": "confirmed"}
+
+    envelope = build_envelope(
+        _outcome_props("orders.transition.succeeded.v1", causation),
+        "orders.transition.succeeded.v1", legacy,
+    )
+
+    assert envelope["event_type"] == "orders.transition.succeeded.v1"
+    assert envelope["producer"] == ORIGIN_PRODUCER
+    assert envelope["aggregate"] == {"type": "order", "id": "42", "version": 4}
+    assert envelope["causation_id"] == causation
+    assert envelope["data"] == legacy
+
+
+def test_bridge_maps_transition_rejected():
+    legacy = {"command_id": str(uuid.uuid4()), "order_id": 42,
+              "reject_code": "stale_status", "current_status": "preparing", "detail": "x"}
+
+    envelope = build_envelope(
+        _outcome_props("orders.transition.rejected.v1", str(uuid.uuid4())),
+        "orders.transition.rejected.v1", legacy,
+    )
+
+    assert envelope["event_type"] == "orders.transition.rejected.v1"
+    assert envelope["data"]["reject_code"] == "stale_status"
+
+
+def test_bridge_forwards_absent_causation_as_none():
+    envelope = build_envelope(
+        _outcome_props("orders.transition.succeeded.v1", None),
+        "orders.transition.succeeded.v1",
+        {"command_id": str(uuid.uuid4()), "order_id": 42, "from_status": "created", "status": "confirmed"},
+    )
+    assert envelope["causation_id"] is None

@@ -9,7 +9,8 @@ from event_contracts import UnknownEventType, parse_event
 from prometheus_client import start_http_server
 from pydantic import ValidationError
 
-from operations import messaging, projection
+from operations import dispatch, messaging, projection
+from operations.commands import OutcomeMismatch
 from operations.metrics import consumer_connected, projection_events
 
 log = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class Command(BaseCommand):
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         try:
-            projection.apply(envelope, data)
+            dispatch.handle(envelope, data)
         except projection.ProjectionConflict as exc:
             log.warning(
                 "operations projection conflict -> DLQ",
@@ -65,6 +66,11 @@ class Command(BaseCommand):
                        "aggregate_id": exc.aggregate_id, "version": exc.version},
             )
             projection_events.labels(envelope.event_type, "conflict").inc()
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+        except OutcomeMismatch:
+            log.warning("operations outcome does not match its command -> DLQ")
+            projection_events.labels(envelope.event_type, "outcome_mismatch").inc()
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         except projection.SnapshotProtocolError:

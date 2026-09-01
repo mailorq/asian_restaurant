@@ -214,7 +214,8 @@ def _restore_stock(order: Order, staff=None) -> None:
 
 
 @transaction.atomic
-def transition(order: Order, new_status: str, changed_by=None, note: str = "", expected_status: str | None = None) -> Order:
+def transition(order: Order, new_status: str, changed_by=None, note: str = "",
+               expected_status: str | None = None, causation_id=None) -> Order:
     locked = Order.objects.select_for_update().get(pk=order.pk)
     if expected_status is not None and locked.status != expected_status:
         raise CheckoutError("stale_order", f"Заказ уже в статусе «{locked.get_status_display()}»")
@@ -235,6 +236,7 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "", e
         aggregate_version=OrderStatusHistory.objects.filter(order=locked).count(),
         event_type="order.status_changed",
         routing_key="order.status_changed",
+        causation_id=causation_id,
         payload={"order_id": locked.id, "status": new_status, "from_status": previous},
     )
     return locked

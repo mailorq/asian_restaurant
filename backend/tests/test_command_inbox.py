@@ -187,3 +187,25 @@ def test_rejected_outcome_is_also_recorded_in_the_inbox(order, employee_user):
     assert inbox.outcome_type == "orders.transition.rejected.v1"
     assert row.event_id == inbox.outcome_event_id
     assert Order.objects.get(pk=order.id).status == "created"
+
+
+def test_relay_headers_carry_causation_from_the_outcome_row(order, employee_user):
+    from orders.management.commands.publish_outbox import _headers
+
+    actor = _grant(employee_user)
+    _apply(_request(actor, order.id))
+    row = OrderOutbox.objects.get(event_type="orders.transition.succeeded.v1")
+
+    headers = _headers(row)
+
+    assert headers["causation_id"] == str(row.causation_id)
+    assert headers["correlation_id"] == str(row.correlation_id)
+    assert headers["event_id"] == str(row.event_id)
+
+
+def test_relay_headers_have_no_causation_for_plain_events(order):
+    from orders.management.commands.publish_outbox import _headers
+
+    row = OrderOutbox.objects.filter(event_type="order.created").first()
+
+    assert _headers(row)["causation_id"] is None

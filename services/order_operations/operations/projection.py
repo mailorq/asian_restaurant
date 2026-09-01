@@ -47,24 +47,35 @@ class ProjectionConflict(Exception):
         super().__init__(f"{aggregate} {aggregate_id}: conflicting event at version {version}")
 
 
-@transaction.atomic
-def apply(envelope: Envelope, data) -> bool:
-    """Project one versioned event. Returns False if already seen (idempotent)"""
+def remember(envelope: Envelope) -> bool:
+    """records the event in the inbox; False means it was already handled"""
     _, created = InboxEvent.objects.get_or_create(
         event_id=envelope.event_id,
         defaults={"event_type": envelope.event_type, "aggregate_version": envelope.aggregate.version},
     )
     if not created:
         projection_events.labels(envelope.event_type, "idempotent").inc()
-        return False
+    return created
 
+
+@transaction.atomic
+def apply(envelope: Envelope, data) -> bool:
+    """project one versioned event. returns False if already seen (idempotent)"""
+    if not remember(envelope):
+        return False
+    project(envelope, data)
+    return True
+
+
+def project(envelope: Envelope, data) -> None:
+    """applies one event to the projections without touching the inbox"""
     if envelope.event_type == EVENT_SNAPSHOT_CONTROL:
         _handle_control(envelope, data)
-        return True
+        return
 
     if envelope.snapshot:
         _record_expectation(envelope, data)
-        return True
+        return
 
     if envelope.event_type == EVENT_ORDER_CREATED:
         _order_created(envelope, data)
@@ -76,7 +87,6 @@ def apply(envelope: Envelope, data) -> bool:
         _customer_changed(envelope, data)
     elif envelope.event_type == EVENT_AUTHZ_CHANGED:
         _authz_changed(envelope, data)
-    return True
 
 
 def _fence(envelope: Envelope, current_version: int, aggregate: str) -> str:

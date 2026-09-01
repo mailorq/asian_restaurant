@@ -10,6 +10,8 @@ from event_contracts import (
     EVENT_CUSTOMER_CHANGED,
     EVENT_ORDER_CREATED,
     EVENT_ORDER_STATUS_CHANGED,
+    EVENT_ORDER_TRANSITION_REJECTED,
+    EVENT_ORDER_TRANSITION_SUCCEEDED,
     EVENT_SNAPSHOT_CONTROL,
     EVENT_STOCK_CHANGED,
     parse_event,
@@ -40,6 +42,8 @@ LEGACY_TO_VERSIONED = {
     "identity.customer_changed": EVENT_CUSTOMER_CHANGED,
     "identity.authz_changed": EVENT_AUTHZ_CHANGED,
     "snapshot.control": EVENT_SNAPSHOT_CONTROL,
+    "orders.transition.succeeded.v1": EVENT_ORDER_TRANSITION_SUCCEEDED,
+    "orders.transition.rejected.v1": EVENT_ORDER_TRANSITION_REJECTED,
 }
 
 # aggregate type + the legacy payload key that holds the aggregate id
@@ -50,6 +54,8 @@ _AGGREGATE = {
     EVENT_CUSTOMER_CHANGED: ("customer", "customer_id"),
     EVENT_AUTHZ_CHANGED: ("authz", "subject_id"),
     EVENT_SNAPSHOT_CONTROL: ("snapshot", "run_id"),
+    EVENT_ORDER_TRANSITION_SUCCEEDED: ("order", "order_id"),
+    EVENT_ORDER_TRANSITION_REJECTED: ("order", "order_id"),
 }
 
 
@@ -84,6 +90,9 @@ def declare_bridge_topology(channel) -> None:
 
 
 def _map_data(event_type: str, legacy: dict) -> dict:
+    if event_type in (EVENT_ORDER_TRANSITION_SUCCEEDED, EVENT_ORDER_TRANSITION_REJECTED):
+        # storefront already writes these in contract shape
+        return legacy
     if event_type == EVENT_ORDER_CREATED:
         items = []
         for item in legacy.get("items", []):
@@ -177,7 +186,7 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
             "version": _safe_int(headers.get("aggregate_version"), 1),
         },
         "correlation_id": headers.get("correlation_id") or properties.correlation_id,
-        "causation_id": None,
+        "causation_id": headers.get("causation_id"),
         "trace_id": None,
         "data": _map_data(event_type, legacy),
     }
