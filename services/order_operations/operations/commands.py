@@ -8,8 +8,10 @@ command that the storefront actually applied stuck as timed_out.
 
 import uuid
 from datetime import timedelta
+from enum import StrEnum
 
 from django.db import IntegrityError, transaction
+from django.db.models import F, Q
 from django.utils import timezone
 from event_contracts import (
     EVENT_ORDER_TRANSITION_REQUESTED,
@@ -169,42 +171,93 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
         return locked
 
 
-def claim_for_publish(row_id: int, *, worker: str, lease: timedelta) -> OperationsOutbox | None:
-    """locks one publishable row and stamps the attempt, or returns None when it must not be sent
+class ClaimResult(StrEnum):
+    CLAIMED = "claimed"          # leased by this worker, safe to publish
+    BUSY = "busy"                # another worker holds an unexpired lease
+    EXPIRED = "expired"          # past deadline and never sent, finalised locally
+    UNAVAILABLE = "unavailable"  # already published, suppressed, or command finished
 
-    Locks outbox before command; expire_before_dispatch takes the same order. The stamp is
-    written inside this transaction, so a row handed to the network can no longer be suppressed.
+
+def _suppress_expired(row: OperationsOutbox, command: OperationCommand) -> None:
+    row.status = OperationsOutbox.Status.SUPPRESSED
+    row.save(update_fields=["status"])
+    command.status = OperationCommand.Status.REJECTED
+    command.result_code = str(TransitionRejectCode.command_expired)
+    command.result_detail = "expired before any publish attempt"
+    command.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+    OperationAuditLog.objects.create(
+        actor_id=str(command.actor_id), actor_role=ACTOR_ROLE, action=command.command_type,
+        target=command.target, command_id=command.command_id, result="command_expired",
+    )
+
+
+def claim_or_expire(row_id: int, *, worker: str, lease: timedelta):
+    """leases one row for publishing, or finalises it when it expired before ever being sent
+
+    Locks outbox before command, the same order expire_before_dispatch uses. The attempt stamp
+    and the fencing token are written here, so a row handed to the network cannot be suppressed
+    and a superseded worker cannot complete it later.
     """
+    now = timezone.now()
     with transaction.atomic():
         row = (
             OperationsOutbox.objects.select_for_update(skip_locked=True)
             .filter(pk=row_id, status=OperationsOutbox.Status.PENDING)
+            .filter(Q(locked_until__isnull=True) | Q(locked_until__lte=now))
+            .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
             .first()
         )
         if row is None:
-            return None
+            still_pending = OperationsOutbox.objects.filter(
+                pk=row_id, status=OperationsOutbox.Status.PENDING
+            ).exists()
+            return (ClaimResult.BUSY if still_pending else ClaimResult.UNAVAILABLE), None
+
+        command = None
         if row.command_id is not None:
             command = OperationCommand.objects.select_for_update().get(pk=row.command_id)
             if command.status in OperationCommand.TERMINAL:
-                return None
-            expired = command.deadline_at is not None and command.deadline_at <= timezone.now()
+                return ClaimResult.UNAVAILABLE, None
+            expired = command.deadline_at is not None and command.deadline_at <= now
             if expired and row.publish_attempted_at is None:
-                return None  # never sent and past its deadline: expiry finalises it instead
-        now = timezone.now()
+                if command.status == OperationCommand.Status.PENDING:
+                    _suppress_expired(row, command)
+                    return ClaimResult.EXPIRED, None
+                return ClaimResult.UNAVAILABLE, None
+
         if row.publish_attempted_at is None:
             row.publish_attempted_at = now
+        row.lease_token = uuid.uuid4()
         row.locked_by = worker
         row.locked_until = now + lease
-        row.save(update_fields=["publish_attempted_at", "locked_by", "locked_until"])
-        return row
+        row.save(update_fields=["publish_attempted_at", "lease_token", "locked_by", "locked_until"])
+        return ClaimResult.CLAIMED, row
+
+
+def mark_published(row: OperationsOutbox) -> bool:
+    """completes the attempt only if this worker still holds the lease it was given"""
+    return bool(
+        OperationsOutbox.objects.filter(
+            pk=row.pk, lease_token=row.lease_token, status=OperationsOutbox.Status.PENDING
+        ).update(
+            status=OperationsOutbox.Status.PUBLISHED, published_at=timezone.now(),
+            attempts=F("attempts") + 1, locked_until=None, locked_by="", lease_token=None,
+        )
+    )
+
+
+def schedule_retry(row: OperationsOutbox, *, backoff: timedelta, error: str = "") -> bool:
+    """releases the lease for a later attempt, only for the worker that still holds it"""
+    return bool(
+        OperationsOutbox.objects.filter(pk=row.pk, lease_token=row.lease_token).update(
+            attempts=F("attempts") + 1, next_attempt_at=timezone.now() + backoff,
+            last_error=error[:1000], locked_until=None, locked_by="", lease_token=None,
+        )
+    )
 
 
 def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
-    """finalises an expired command only while it provably never reached the broker
-
-    Restricted to a still pending command: timed_out already reports unresolved delivery, and
-    downgrading it locally would make the terminal state depend on which worker ran first.
-    """
+    """sweeper entry point for a command that expired before it ever reached the broker"""
     with transaction.atomic():
         row = (
             OperationsOutbox.objects.select_for_update()
@@ -218,16 +271,7 @@ def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
             return locked
         if row.status != OperationsOutbox.Status.PENDING:
             return locked
-        row.status = OperationsOutbox.Status.SUPPRESSED
-        row.save(update_fields=["status"])
-        locked.status = OperationCommand.Status.REJECTED
-        locked.result_code = str(TransitionRejectCode.command_expired)
-        locked.result_detail = "expired before any publish attempt"
-        locked.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
-        OperationAuditLog.objects.create(
-            actor_id=str(locked.actor_id), actor_role=ACTOR_ROLE, action=locked.command_type,
-            target=locked.target, command_id=locked.command_id, result="command_expired",
-        )
+        _suppress_expired(row, locked)
         return locked
 
 

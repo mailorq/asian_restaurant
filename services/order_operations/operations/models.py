@@ -191,6 +191,8 @@ class OperationsOutbox(models.Model):
     last_error = models.TextField(blank=True)
     # stamped before the network call, so a lost confirm still proves the message may exist
     publish_attempted_at = models.DateTimeField(null=True, blank=True)
+    # fencing token: a worker may only complete the attempt it actually holds
+    lease_token = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     published_at = models.DateTimeField(null=True, blank=True)
 

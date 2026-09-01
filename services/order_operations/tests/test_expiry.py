@@ -4,7 +4,7 @@ import pytest
 from django.utils import timezone
 
 from operations import commands
-from operations.commands import create_transition_command
+from operations.commands import ClaimResult, create_transition_command
 from operations.models import OperationAuditLog, OperationCommand, OperationsOutbox
 
 pytestmark = pytest.mark.django_db
@@ -24,8 +24,8 @@ def _outbox(command):
     return OperationsOutbox.objects.get(command=command)
 
 
-def _claim(command):
-    return commands.claim_for_publish(_outbox(command).pk, worker="w1", lease=LEASE)
+def _claim(command, worker="w1", lease=LEASE):
+    return commands.claim_or_expire(_outbox(command).pk, worker=worker, lease=lease)
 
 
 def _expire_deadline(command):
@@ -33,6 +33,13 @@ def _expire_deadline(command):
     command.save(update_fields=["deadline_at"])
 
 
+def _release_lease(command):
+    OperationsOutbox.objects.filter(command=command).update(
+        locked_until=timezone.now() - timedelta(seconds=1)
+    )
+
+
+# --- expiry ---------------------------------------------------------------
 def test_expiry_without_any_publish_attempt_suppresses_the_row():
     command = _command()
 
@@ -46,7 +53,7 @@ def test_expiry_without_any_publish_attempt_suppresses_the_row():
 
 def test_expiry_after_a_publish_attempt_leaves_the_command_open():
     command = _command()
-    assert _claim(command) is not None
+    assert _claim(command)[0] is ClaimResult.CLAIMED
 
     result = commands.expire_before_dispatch(command)
 
@@ -70,9 +77,7 @@ def test_expiry_does_not_reopen_a_terminal_command():
     command.status = OperationCommand.Status.SUCCEEDED
     command.save(update_fields=["status"])
 
-    result = commands.expire_before_dispatch(command)
-
-    assert result.status == OperationCommand.Status.SUCCEEDED
+    assert commands.expire_before_dispatch(command).status == OperationCommand.Status.SUCCEEDED
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
@@ -86,39 +91,97 @@ def test_suppressed_row_is_not_suppressed_twice():
     assert OperationAuditLog.objects.filter(command_id=command.command_id).count() == before
 
 
-def test_claim_stamps_the_attempt_once_and_takes_the_lease():
+# --- lease ----------------------------------------------------------------
+def test_second_worker_is_refused_while_the_lease_holds():
     command = _command()
+    assert _claim(command, worker="w1")[0] is ClaimResult.CLAIMED
 
-    first = _claim(command)
-    stamped = first.publish_attempted_at
-    second = commands.claim_for_publish(_outbox(command).pk, worker="w2", lease=LEASE)
+    result, row = _claim(command, worker="w2")
 
-    assert stamped is not None and first.locked_by == "w1"
-    assert second.publish_attempted_at == stamped
+    assert result is ClaimResult.BUSY and row is None
+    assert _outbox(command).locked_by == "w1"
+
+
+def test_second_worker_takes_over_after_the_lease_expires():
+    command = _command()
+    _, first = _claim(command, worker="w1")
+    _release_lease(command)
+
+    result, second = _claim(command, worker="w2")
+
+    assert result is ClaimResult.CLAIMED
     assert second.locked_by == "w2"
+    assert second.lease_token != first.lease_token
+    assert second.publish_attempted_at == first.publish_attempted_at  # stamped once
 
 
+def test_superseded_worker_cannot_mark_published():
+    command = _command()
+    _, stale = _claim(command, worker="w1")
+    _release_lease(command)
+    _claim(command, worker="w2")
+
+    assert commands.mark_published(stale) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
+def test_superseded_worker_cannot_schedule_retry():
+    command = _command()
+    _, stale = _claim(command, worker="w1")
+    _release_lease(command)
+    _, fresh = _claim(command, worker="w2")
+
+    assert commands.schedule_retry(stale, backoff=timedelta(seconds=30)) is False
+    assert _outbox(command).lease_token == fresh.lease_token
+
+
+def test_lease_holder_completes_and_releases_the_row():
+    command = _command()
+    _, row = _claim(command)
+
+    assert commands.mark_published(row) is True
+    stored = _outbox(command)
+    assert stored.status == OperationsOutbox.Status.PUBLISHED
+    assert stored.lease_token is None and stored.locked_by == ""
+
+
+def test_retry_releases_the_lease_and_defers_the_row():
+    command = _command()
+    _, row = _claim(command)
+
+    assert commands.schedule_retry(row, backoff=timedelta(seconds=30), error="boom") is True
+    stored = _outbox(command)
+    assert stored.lease_token is None and stored.attempts == 1
+    assert _claim(command, worker="w2")[0] is ClaimResult.BUSY  # still inside the backoff window
+
+
+# --- claim decisions ------------------------------------------------------
 def test_suppressed_row_is_never_claimed_again():
     command = _command()
     commands.expire_before_dispatch(command)
 
-    assert _claim(command) is None  # suppression guarantees no network publish
+    assert _claim(command)[0] is ClaimResult.UNAVAILABLE
 
 
-def test_claim_refuses_an_expired_row_that_was_never_attempted():
+def test_claim_expires_a_row_that_was_never_attempted():
     command = _command()
     _expire_deadline(command)
 
-    assert _claim(command) is None
+    result, row = _claim(command)
+
+    assert result is ClaimResult.EXPIRED and row is None
+    assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.REJECTED
 
 
 def test_claim_allows_an_expired_row_that_was_already_attempted():
     command = _command()
-    assert _claim(command) is not None
+    assert _claim(command)[0] is ClaimResult.CLAIMED
     _expire_deadline(command)
+    _release_lease(command)
 
     # already on the wire: keep publishing so the storefront can resolve it with an outcome
-    assert _claim(command) is not None
+    assert _claim(command, worker="w2")[0] is ClaimResult.CLAIMED
 
 
 def test_claim_refuses_a_terminal_command():
@@ -126,4 +189,4 @@ def test_claim_refuses_a_terminal_command():
     command.status = OperationCommand.Status.SUCCEEDED
     command.save(update_fields=["status"])
 
-    assert _claim(command) is None
+    assert _claim(command)[0] is ClaimResult.UNAVAILABLE

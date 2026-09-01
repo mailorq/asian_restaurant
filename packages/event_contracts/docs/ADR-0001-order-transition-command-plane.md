@@ -103,6 +103,12 @@ Expiry is **executable**, not just a UI label:
   to `rejected` locally, otherwise the terminal state would depend on which worker ran first;
 - claiming and expiry both lock `OperationsOutbox` before `OperationCommand`, so the relay and the
   sweeper cannot deadlock against each other;
+- a row is claimable only while no unexpired lease holds it. The claim mints a `lease_token`, and
+  publish completion and retry scheduling are conditional on it, so a worker superseded after a
+  lease timeout can no longer touch the row. `locked_by` alone is not enough because a process
+  identity can repeat after a restart;
+- one operation decides and reports the reason, `claimed`, `busy`, `expired` or `unavailable`, so
+  an expired command that the claim refuses is finalized on the spot rather than left pending;
 - an expired command that was already attempted keeps being published: the storefront rejects it
   with `command_expired` and that outcome finalizes it, which resolves the unknown state instead
   of leaving it open;
