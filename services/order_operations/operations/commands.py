@@ -169,6 +169,46 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
         return locked
 
 
+def mark_publish_attempt(row: OperationsOutbox) -> None:
+    """stamps the row before the network call so a lost confirm still counts as a maybe-delivery"""
+    if row.publish_attempted_at is None:
+        row.publish_attempted_at = timezone.now()
+        row.save(update_fields=["publish_attempted_at"])
+
+
+def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
+    """
+    finalises an expired command only while it provably never reached the broker
+
+    A row that was already handed to the network may have been delivered even without a confirm,
+    so it keeps its pending outbox entry and may only be finalised by a real outcome.
+    """
+    with transaction.atomic():
+        locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        row = (
+            OperationsOutbox.objects.select_for_update()
+            .filter(command=locked)
+            .first()
+        )
+        if locked.status in OperationCommand.TERMINAL:
+            return locked
+        if row is None or row.publish_attempted_at is not None:
+            return locked
+        if row.status != OperationsOutbox.Status.PENDING:
+            return locked
+        row.status = OperationsOutbox.Status.SUPPRESSED
+        row.save(update_fields=["status"])
+        locked.status = OperationCommand.Status.REJECTED
+        locked.result_code = str(TransitionRejectCode.command_expired)
+        locked.result_detail = "expired before any publish attempt"
+        locked.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+        OperationAuditLog.objects.create(
+            actor_id=str(locked.actor_id), actor_role=ACTOR_ROLE, action=locked.command_type,
+            target=locked.target, command_id=locked.command_id, result="command_expired",
+        )
+        return locked
+
+
 def _advance(command: OperationCommand, to_status, *, allowed) -> OperationCommand:
     with transaction.atomic():
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)

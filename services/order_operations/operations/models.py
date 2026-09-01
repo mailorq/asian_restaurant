@@ -167,6 +167,7 @@ class OperationsOutbox(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         PUBLISHED = "published", "Published"
+        SUPPRESSED = "suppressed", "Suppressed"  # expired before any publish attempt
 
     event_id = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
@@ -188,6 +189,8 @@ class OperationsOutbox(models.Model):
     locked_until = models.DateTimeField(null=True, blank=True)
     locked_by = models.CharField(max_length=64, blank=True)
     last_error = models.TextField(blank=True)
+    # stamped before the network call, so a lost confirm still proves the message may exist
+    publish_attempted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     published_at = models.DateTimeField(null=True, blank=True)
 

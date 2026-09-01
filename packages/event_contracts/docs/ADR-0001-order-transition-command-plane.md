@@ -95,8 +95,13 @@ pending         -> rejected           expired BEFORE dispatch (never published; 
 codes inside `rejected`, not extra states.
 
 Expiry is **executable**, not just a UI label:
-- the relay refuses to publish an already-expired `pending` command and finalizes it locally as
-  `rejected/command_expired` - safe precisely because it was never published;
+- the relay finalizes an expired command locally as `rejected/command_expired` **only while it
+  provably never reached the network**. `OperationsOutbox.publish_attempted_at` is stamped before
+  the call, so a lost confirm still counts as a possible delivery; `pending` alone is not proof.
+  The suppressed row moves to a terminal outbox status so it is never published afterwards;
+- an expired command that was already attempted keeps being published: the storefront rejects it
+  with `command_expired` and that outcome finalizes it, which resolves the unknown state instead
+  of leaving it open;
 - once **dispatched**, expiry may only produce the non-terminal `timed_out`: absence of an outcome
   is not proof of non-delivery. A late message is rejected by the consumer with `command_expired`,
   and that outcome finalizes the command;
