@@ -67,52 +67,53 @@ def _authorized(actor, data: OrderTransitionRequestedData) -> bool:
     )
 
 
-def _record(data: OrderTransitionRequestedData, *, request_event_id, correlation_id,
-            event_type: str, payload: dict, order: Order | None) -> Outcome:
-    outcome_event_id = uuid.uuid4()
-    CommandInbox.objects.create(
-        command_id=data.command_id,
-        request_event_id=request_event_id,
-        correlation_id=correlation_id,
-        outcome_event_id=outcome_event_id,
-        outcome_type=event_type,
-        outcome_data=payload,
-    )
+def _finalize(claim: CommandInbox, *, event_type: str, payload: dict, order: Order | None) -> Outcome:
+    claim.outcome_type = event_type
+    claim.outcome_data = payload
+    claim.save(update_fields=["outcome_type", "outcome_data"])
     OrderOutbox.objects.create(
-        event_id=outcome_event_id,
-        aggregate_id=str(data.order_id),
+        event_id=claim.outcome_event_id,
+        aggregate_id=str(payload["order_id"]),
         aggregate_version=_order_version(order),
         event_type=event_type,
         routing_key=ROUTING_KEYS[event_type],
-        correlation_id=correlation_id,
-        causation_id=request_event_id,
+        correlation_id=claim.correlation_id,
+        causation_id=claim.request_event_id,
         payload=payload,
     )
     return Outcome(event_type, payload)
 
 
-def _reject(data: OrderTransitionRequestedData, *, request_event_id, correlation_id,
+def _reject(claim: CommandInbox, data: OrderTransitionRequestedData, *,
             code: TransitionRejectCode, order: Order | None = None,
             current_status: str | None = None, detail: str = "") -> Outcome:
     payload = OrderTransitionRejectedData(
         command_id=data.command_id, order_id=data.order_id, reject_code=code,
         current_status=current_status, detail=detail,
     ).model_dump(mode="json")
-    return _record(data, request_event_id=request_event_id, correlation_id=correlation_id,
-                   event_type=EVENT_ORDER_TRANSITION_REJECTED, payload=payload, order=order)
+    return _finalize(claim, event_type=EVENT_ORDER_TRANSITION_REJECTED, payload=payload, order=order)
 
 
 @transaction.atomic
 def apply_transition_command(data: OrderTransitionRequestedData, *, request_event_id,
                              correlation_id) -> Outcome:
     """applies one transition command, idempotent by command_id"""
-    seen = CommandInbox.objects.filter(command_id=data.command_id).first()
-    if seen is not None:
-        # recorded outcome replays verbatim, including after expiry
-        return Outcome(seen.outcome_type, seen.outcome_data, replayed=True)
+    # the inbox row is claimed before any work: a concurrent delivery blocks on the unique
+    # command_id until this transaction commits and then replays the recorded outcome
+    claim, created = CommandInbox.objects.get_or_create(
+        command_id=data.command_id,
+        defaults={
+            "request_event_id": request_event_id,
+            "correlation_id": correlation_id,
+            "outcome_event_id": uuid.uuid4(),
+            "outcome_type": "",
+            "outcome_data": {},
+        },
+    )
+    if not created:
+        return Outcome(claim.outcome_type, claim.outcome_data, replayed=True)
 
-    reject = partial(_reject, data, request_event_id=request_event_id,
-                     correlation_id=correlation_id)
+    reject = partial(_reject, claim, data)
 
     # fixed order; the first three run before the order is loaded
     if data.expires_at <= timezone.now():
@@ -138,12 +139,11 @@ def apply_transition_command(data: OrderTransitionRequestedData, *, request_even
     from_status = order.status
     order_service.transition(
         order, data.target_status, changed_by=actor, note=data.reason[:255],
-        expected_status=data.expected_status,
+        expected_status=data.expected_status, causation_id=claim.request_event_id,
     )
     payload = OrderTransitionSucceededData(
         command_id=data.command_id, order_id=data.order_id,
         from_status=from_status, status=data.target_status,
     ).model_dump(mode="json")
-    return _record(data, request_event_id=request_event_id, correlation_id=correlation_id,
-                   event_type=EVENT_ORDER_TRANSITION_SUCCEEDED, payload=payload,
-                   order=Order.objects.get(pk=order.pk))
+    return _finalize(claim, event_type=EVENT_ORDER_TRANSITION_SUCCEEDED, payload=payload,
+                     order=Order.objects.get(pk=order.pk))
