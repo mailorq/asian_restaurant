@@ -24,6 +24,7 @@ class OrderOutbox(models.Model):
     routing_key = models.CharField(max_length=64, default="order.created")
     schema_version = models.PositiveSmallIntegerField(default=1)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)
+    causation_id = models.UUIDField(null=True, blank=True)
     snapshot = models.BooleanField(default=False)
     snapshot_run_id = models.CharField(max_length=64, blank=True)
     payload = models.JSONField()
@@ -191,6 +192,24 @@ class OrderStatusHistory(models.Model):
 
     def __str__(self) -> str:
         return f"{self.order_id}: {self.from_status or '∅'} → {self.to_status}"
+
+
+class CommandInbox(models.Model):
+    """applied operations command with the outcome it produced
+
+    a redelivered command replays this outcome instead of acting again
+    """
+
+    command_id = models.UUIDField(unique=True)
+    request_event_id = models.UUIDField()
+    correlation_id = models.UUIDField()
+    outcome_event_id = models.UUIDField(unique=True)
+    outcome_type = models.CharField(max_length=64)
+    outcome_data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"{self.command_id} -> {self.outcome_type}"
 
 
 class ProcessedEvent(models.Model):
