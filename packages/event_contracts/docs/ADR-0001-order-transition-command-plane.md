@@ -1,138 +1,190 @@
-# ADR-0001 — Order-transition command plane
+# ADR-0001 - order transition command plane
 
 ## Status
-Proposed (slice 1). The contract (`orders.transition.*.v1`), the `OperationCommand` state model,
-and idempotent command creation / outcome application have landed with tests. The RabbitMQ
-topology and permission deltas in **§Transport** are security-sensitive and are **not**
-implemented until signed off.
+**Accepted**. Covers `orders.transition` only; `stock.adjust` gets its own decision record.
 
 ## Context
-Staff change order status today through the storefront's own employee API
-(`POST /api/employee/orders/{id}/transition`), which writes the order directly. The operations
-service is a separate read side: its own database, its own credentials, projections built from
-versioned events. To let the new operations UI drive order state **without** giving operations
-write access to the storefront database — and **without** a second direct write path — operations
-issues an intent, the storefront (sole writer) applies it, and the outcome returns as a versioned
-event.
+Staff change order status through the storefront's employee API, which writes the order directly.
+Operations is a separate service: own database, own credentials, projections built from versioned
+events. To let an operations UI drive order state **without** giving operations write access to the
+storefront database - and without creating a second direct write path - operations issues an
+intent, the storefront (sole writer) applies it, and the outcome returns as a versioned event.
 
-## Decision — flow
-1. **Operations API** accepts an employee JWT. `actor_id` is taken **only** from the verified JWT
-   subject, never the request body. In one operations-DB transaction it idempotently creates an
-   `OperationCommand`, an `OperationAuditLog`, and one `orders.transition.requested.v1` in
-   `OperationsOutbox`. Operations never touches the storefront DB.
-2. **Operations outbox relay** publishes the requested event with publisher confirms, then moves
-   the command `pending → dispatched`.
-3. **Storefront command consumer** is the ONLY writer. In one storefront-DB transaction it: dedups
-   by `command_id` (CommandInbox); loads and `select_for_update`s the order; checks
-   `expected_status` and transition validity; applies via `orders.service.transition` (which
-   already emits the `order.status_changed` projection event to `OrderOutbox`); records the
-   CommandInbox row with the serialized outcome; and writes the outcome event to `OrderOutbox`.
-   A redelivered command replays the stored outcome instead of re-applying.
-4. **Operations outcome consumer** validates the outcome against the command (`command_id`,
-   `order_id`, `correlation_id`, allowed command type) **before** changing status, then finalizes.
-5. **Timeout sweeper** moves a still-open command past `deadline_at` to `timed_out` (see below).
+## Decision, flow
+1. **Operations API** accepts an employee JWT. `actor_id` is taken **only** from the verified token
+   subject and coerced to `int` (the subject is issued as a string), never from the body. In one
+   operations-DB transaction it idempotently creates an `OperationCommand`, an `OperationAuditLog`
+   row, and one `orders.transition.requested.v1` row in `OperationsOutbox`. Operations never
+   touches the storefront database.
+2. **Operations outbox relay** publishes the request with publisher confirms directly to the
+   storefront `commands` exchange (see Transport), then moves the command to `dispatched`.
+3. **Storefront command consumer** is the ONLY writer. In one transaction it: dedups by
+   `command_id`; rejects an expired command; **re-authorizes the actor under lock**; loads and
+   locks the order; checks `expected_status` and transition validity; applies the change through
+   `orders.service.transition`; records `CommandInbox` with the serialized outcome; and writes the
+   outcome event to `OrderOutbox`. A redelivered command replays the stored outcome verbatim.
+4. **Bridge** relays the outcome to `operations.events` (existing path, existing permissions).
+5. **Operations outcome consumer** finalizes the command through the single transactional
+   dispatcher below.
 
-**Legacy path:** `POST /api/employee/orders/{id}/transition` and `/inventory/{id}/adjust` stay for
-the existing storefront UI during migration but are marked legacy; the new operations UI uses only
-the command plane, so no second write path originates from the new surface.
+## Transport
+Operations publishes commands **directly** to the storefront vhost with a dedicated,
+least-privilege credential. No extra relay process and no second retry/DLQ surface, at the cost
+of one narrow write grant.
 
-## Idempotency (option B)
-Command creation is idempotent on a **client-supplied `idempotency_key`**, enforced by a unique
-constraint `(actor_id, command_type, target, idempotency_key)`. A repeat with the same identity
-**and** the same request payload returns the existing command (no new outbox row). The same key
-with a **different** request payload is a conflict (HTTP 409). Different actors never collide on
-the same key. `command_id` is server-minted and identifies the command instance; the idempotency
-guard is the key, not `command_id` (a bare HTTP retry without a key would otherwise create a new
-command).
+- new RabbitMQ user **`operations_commands`**, used **only** by the operations outbox relay;
+- storefront vhost permissions: `configure=^$`, `write=^commands$`, `read=^$`;
+- its own setting/env var **`OPERATIONS_COMMANDS_RABBITMQ_URL`** - never `OPERATIONS_RABBITMQ_URL`
+  and never the consumer's credential;
+- because `configure` is empty, the publisher **cannot and must not declare** any exchange, queue
+  or binding. The storefront command consumer owns and declares the whole command topology
+  (`commands` exchange, `commands.orders` queue, retry queue, `commands.orders.dlq`);
+- `definitions.dev.json` and `provision.sh` must be changed **together**, and `provision.sh` must
+  also `revoke` the new user everywhere it must not reach (`/` and `operations`): isolation is
+  enforced, not merely granted.
 
-## Command states & delivery uncertainty
-```
-pending         -> dispatched         requested event confirmed to the broker
-pending         -> dispatch_failed    relay exhausted publish retries -> DLQ (delivery UNKNOWN)
-dispatch_failed -> dispatched         successful re-publish (retry) confirmed
-pending         -> timed_out          deadline passed, not yet dispatched
-dispatched      -> timed_out          deadline passed, no outcome yet
-{pending, dispatched, timed_out, dispatch_failed} -> succeeded | rejected   outcome applied
-```
-**Terminal = `{succeeded, rejected}` only** — a command is finished solely when the storefront
-reports an outcome. Under **at-least-once** transport, neither a missing publisher confirm nor a
-message landing in a DLQ proves the storefront never received the command: the publish may have
-reached the broker/storefront just before a network error or a relay/process crash, so a late
-outcome is still possible. Absence of confirmation is an **unknown delivery state, not proof of
-non-delivery**. `dispatch_failed` and `timed_out` are therefore **non-terminal** unknown-delivery
-states that raise alerts and drive retry/reconciliation; a late `succeeded`/`rejected` outcome
-finalizes the command from any non-terminal state. There is no terminal `failed` state and no
-`mark_failed()` terminal transition. The UI must show `dispatch_failed`/`timed_out` as "delivery
-unconfirmed — reconciling", never as "the storefront did nothing".
+Outcomes travel the **existing** storefront outbox to the `orders` exchange, then the bridge to
+`operations.events`. Routing keys are `order.transition_succeeded` / `order.transition_rejected`,
+chosen to match the bridge's existing `order.*` binding, so the outcome direction needs no new
+exchange, queue or permission. There is no `operations.commands.outcomes` exchange.
 
-## Contract (this package)
-Events — `schema_version` 1, shared `Envelope`, aggregate `(order, order_id)`:
+## Contract
+Events - `schema_version` 1, shared `Envelope`, aggregate `(order, order_id)`:
 
 | event | data |
 |-------|------|
-| `orders.transition.requested.v1` | `command_id`, `actor_id`(>0), `order_id`(>0), `expected_status`, `target_status` (≠ expected), `reason` (≤255) |
-| `orders.transition.succeeded.v1` | `command_id`, `order_id`, `from_status`, `status` (≠ from_status) |
-| `orders.transition.rejected.v1`  | `command_id`, `order_id`, `reject_code`, `current_status`, `detail` (≤255) |
+| `orders.transition.requested.v1` | `command_id`, `actor_id`(>0), `actor_authz_version`(>=1), `expires_at`, `order_id`(>0), `expected_status`, `target_status` (differs from expected), `reason` (<=255) |
+| `orders.transition.succeeded.v1` | `command_id`, `order_id`, `from_status`, `status` (differs from from_status) |
+| `orders.transition.rejected.v1` | `command_id`, `order_id`, `reject_code`, optional `current_status`, `detail` (<=255) |
 
-Enforced invariants (`parse_event` + model validators, with negative tests):
-- **producer**: requested MUST be `operations`; succeeded/rejected MUST be `storefront`.
-- **rejected**: `order_not_found` ⇒ `current_status` absent; every other code ⇒ present.
-- **succeeded**: `status` ≠ `from_status`.
-- `reason` / `detail` ≤ 255, matching storefront `OrderStatusHistory.note`.
-- `aggregate.version` is traceability only; the concurrency guard is `expected_status` under lock.
-- **outcome envelope**: `correlation_id` MUST equal the originating command's; `causation_id` MUST
-  be the requested event's `event_id`. (Enforced where the outcome is emitted/consumed — next
-  slice.)
+`producer` MUST be `operations` for the request and `storefront` for both outcomes.
+`aggregate.version` is traceability only; the concurrency guard is `expected_status` checked under
+lock. Outcome envelopes MUST carry `correlation_id` equal to the command's and `causation_id`
+equal to the request event's `event_id`.
 
-## Inbox / outbox
-- **CommandInbox** (storefront) stores, per `command_id`: the request `event_id`,
-  `correlation_id`, and the **serialized outcome**. A redelivered command replays that outcome
-  verbatim and never re-applies the transition.
-- The **outcome consumer** (operations) checks `command_id`, `order_id`, `correlation_id`, an
-  allowed command type, **and that the outcome matches the requested transition** (succeeded:
-  `from_status == expected_status` and `status == target_status`; rejected: `current_status` is
-  consistent with the reject code and `expected_status`) before changing status; a mismatch is
-  rejected, not applied — an outcome for a different target can never finalize the command.
-- **OperationsOutbox** (next iteration) must persist the envelope inputs as first-class columns —
-  `event_id`, `correlation_id`, `causation_id`, `aggregate` id/version, `producer`, `command_id` —
-  and the relay assembles the envelope from those, **not** by re-reading an unvalidated `payload`.
+**Reject codes** and the `current_status` rule. The consumer evaluates in a fixed order, which
+makes the rule deterministic: `current_status` is present **iff** the order was loaded and locked,
+i.e. only for `stale_status` and `invalid_transition`.
 
-## Transport — NEEDS SIGN-OFF (RabbitMQ topology + permissions)
-Vhosts today: `storefront` (`storefront_app`), `operations` (`operations_consumer`), and
-`operations_bridge` spanning both. The command plane crosses vhosts in both directions.
-- **Command (operations → storefront):** operations outbox relay → new `operations.commands` topic
-  exchange on the **operations** vhost (within `^operations\.`) → new cross-vhost **command relay**
-  (mirrors `operations_bridge`) → `commands` exchange on the **storefront** vhost → storefront
-  command consumer's durable `commands.orders` queue (+ retry/DLQ, same shape as elsewhere).
-- **Outcome (storefront → operations):** storefront outbox → existing `orders` exchange →
-  **existing bridge, extended** with the two outcome types → new `operations.commands.outcomes`
-  exchange on the operations vhost → operations outcome consumer.
+| order | code | order loaded? |
+|-------|------|---------------|
+| 1 | `command_expired` - `expires_at` passed | no |
+| 2 | `actor_not_authorized` - actor inactive, role gone, or `authz_version` moved | no |
+| 3 | `order_not_found` | no |
+| 4 | `stale_status` - not at `expected_status` | yes |
+| 5 | `invalid_transition` - target unreachable | yes |
 
-Permission deltas to review (`ops/rabbitmq/definitions.dev.json` + `provision.sh`):
-`operations_consumer` gains `operations.commands` and `operations.commands.outcomes` (already
-inside `^operations\.`); a new cross-vhost relay principal scoped to `commands`/`operations.commands`
-on the storefront vhost; `storefront_app` reads/binds `commands`. Alternative — a dedicated
-`commands` vhost — rejected for slice 1 (more moving parts; the split keeps each app on its vhost).
+## Actor re-authorization (mandatory)
+The JWT is verified when the command is **created**; the transition happens later, so the token's
+authority may already be revoked. Before touching the order the storefront locks the actor row and
+requires `user.is_active and has_operations_role(user) and
+user.authz_version == data.actor_authz_version`. Otherwise the command is rejected with
+`actor_not_authorized` and the order is not modified. This also invalidates commands minted before
+a revocation.
 
-## Reliability & observability
-Publisher confirms; transactional outbox + CommandInbox dedup; bounded retry via a TTL queue that
-dead-letters to a DLQ (poison / retries-exhausted). Exhausting relay/consumer retries moves the
-command to the non-terminal `dispatch_failed` and raises a DLQ-depth alert — it never asserts the
-command did not run. `deadline_at` sweeps a still-open command to the non-terminal `timed_out`.
+## Command states, expiry and delivery uncertainty
+```
+pending         -> dispatched         request confirmed to the broker
+pending         -> dispatch_failed    confirmed unroutable / NACK (delivery UNKNOWN)
+dispatch_failed -> dispatched         successful re-publish
+pending         -> rejected           expired BEFORE dispatch (never published; decided locally)
+{pending, dispatched} -> timed_out    deadline passed, delivery attempted or unknown
+{pending, dispatched, timed_out, dispatch_failed} -> succeeded | rejected   outcome applied
+```
+**Terminal = `{succeeded, rejected}`.** `command_expired` and `actor_not_authorized` are reject
+codes inside `rejected`, not extra states.
+
+Expiry is **executable**, not just a UI label:
+- the relay refuses to publish an already-expired `pending` command and finalizes it locally as
+  `rejected/command_expired` - safe precisely because it was never published;
+- once **dispatched**, expiry may only produce the non-terminal `timed_out`: absence of an outcome
+  is not proof of non-delivery. A late message is rejected by the consumer with `command_expired`,
+  and that outcome finalizes the command;
+- a command already applied (present in `CommandInbox`) replays its **stored** outcome even after
+  `expires_at`, so expiry never rewrites history.
+
+## Idempotency and stable identifiers
+Creation is idempotent on a client-supplied `Idempotency-Key`, enforced by
+`unique(actor_id, command_type, target, idempotency_key)`. Same identity plus same payload returns
+the existing command; same key with a different payload is a conflict; different actors never
+collide.
+
+Event IDs are **stable and stored**, never minted at publish time:
+- `OperationCommand.request_event_id` - the request envelope's `event_id`, reused on every retry;
+- `CommandInbox.outcome_event_id` - reused on every replay, so a duplicate command never produces a
+  second, different outcome event.
+
+## Outbox metadata is first-class on both sides
+Envelopes are assembled from typed columns, never re-derived from an unvalidated JSON payload.
+- `OperationsOutbox`: `command` (nullable OneToOne), `producer`, `aggregate_id`,
+  `aggregate_version`, `causation_id` (alongside the existing `event_id`, `correlation_id`).
+- `OrderOutbox`: `causation_id`.
+- `CommandInbox`: `command_id` (unique), `request_event_id`, `correlation_id`, `outcome_event_id`,
+  `outcome_type`, `outcome_data`.
+
+## One transactional dispatcher, one inbox
+`projection.apply()` writes `InboxEvent` first and commits it with the projection. Calling it and
+then applying the outcome in a second step would leave the inbox row committed when the outcome
+step fails: the redelivery becomes a no-op and the command never completes. There must be exactly
+one inbox mechanism per event id:
+
+```
+parse -> single transaction.atomic():
+           inbox dedup (once)
+           outcome event -> apply_transition_outcome() under lock
+           other event   -> projection apply without a second inbox write
+         commit -> ack
+```
+
+## Retry, failure and DLQ semantics
+- **broker/network unavailable** - nothing was confirmed: the outbox row stays `pending` with
+  exponential backoff and raises an age alert. A DLQ is unreachable in this state by definition, so
+  it is never claimed.
+- **confirmed unroutable / NACK with a live broker** - `dispatch_failed` (non-terminal), long retry
+  plus reconciliation. It never means "the storefront did not run it".
+- **poison message on the consumer** - dead-lettered to `commands.orders.dlq` by the broker.
+- `timed_out` and `dispatch_failed` are operational states requiring alert and reconciliation; the
+  UI must render them as "delivery unconfirmed", never as "nothing happened".
+
+## API
+```
+POST /ops-api/orders/{order_id}/transition-commands     Idempotency-Key: <uuid>
+     body: expected_status, target_status, reason
+     202 Accepted + Location (created) | 200 OK (identical retry) | 409 (key reused with a
+     different payload) | 422 (invalid input) | 401 (missing/invalid token)
+GET  /ops-api/commands/{command_id}                      author-scoped for now
+```
+The idempotency key travels as a **header**, not a body field.
+
+## Legacy policy
+`POST /api/employee/orders/{id}/transition` is marked legacy for the migration window; it is not
+removed, and the new operations UI must not call it. `POST /api/employee/inventory/{id}/adjust` is
+**not** marked legacy - it has no command-plane replacement until the `stock.adjust` command exists, and
+labelling it legacy without a successor would leave inventory without a supported path.
+
+## Observability
 Metrics: command-outbox oldest-pending age, command state counters, `timed_out` /
-`dispatch_failed` gauges, DLQ depth, dispatch/outcome latency.
+`dispatch_failed` gauges, DLQ depth, dispatch and outcome latency. The existing alert
+`rabbitmq_queue_messages{queue=~"operations.*dlq"}` does **not** match `commands.orders.dlq`; the
+command DLQ needs its own rule or a widened matcher, otherwise poison commands are silent.
 
-## Tests
-- **contract** — this package (producer, status rules, length caps, aggregate/id match).
-- **unit** — creation idempotency (same / conflict / different-actor); outcome application incl.
-  `timed_out → late succeeded`, terminal-guard, correlation/order mismatch.
-- **integration** (next slice) — end-to-end; duplicate command; stale status; retry; reject.
-- **failure/retry** (next slice) — broker down keeps the outbox pending; exhausted retries → DLQ →
-  non-terminal `dispatch_failed`, from which a late outcome still finalizes the command.
+## Test matrix
+Unit (both sides), contract, integration over a real broker, and failure/retry. Beyond the happy
+path, this iteration must cover: actor revoked between creation and consumption; command expired before
+and after publish; consumer applied the change but died before ack (replay must reproduce the same
+`outcome_event_id`); outcome handler failure must not leave `InboxEvent` committed;
+`operations_commands` cannot read, declare or publish anywhere else; `UnroutableError` leaves the
+command recoverable; duplicate outcome does not re-write status or audit; two relay/sweeper
+instances do not conflict; the command DLQ is covered by an alert. Every new regression test must
+be shown to fail against the pre-fix code.
 
-## Remaining work (after transport sign-off)
-Operations: command API endpoint (JWT → `create_transition_command`); `publish_operations_outbox`
-relay with dispatched-marking; outcome consumer (`apply_transition_outcome`); timeout sweeper;
-metrics. Storefront: `CommandInbox` model + migration; `run_command_consumer`; outcome events
-emitted by the service; legacy endpoints annotated. Transport: exchanges / queues / permissions per
-§Transport; the command relay. Then integration + failure/retry tests.
+## Preconditions for the RabbitMQ change
+The broker change may only land together with: permission tests,
+`definitions.dev.json` / `provision.sh` parity (including revokes), the new mandatory
+`OPERATIONS_COMMANDS_RABBITMQ_URL`, and an updated production config guard - including raised
+`DJANGO_PRODUCTION` / `OPERATIONS_PRODUCTION` service counters, which are hard-coded thresholds
+that would otherwise let a new service ship without its production guard.
+
+## Sweeper
+Timeout/expiry sweeping is a service function called from the relay loop and also exposed as a
+standalone management command for manual recovery.

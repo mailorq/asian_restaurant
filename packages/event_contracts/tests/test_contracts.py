@@ -324,6 +324,8 @@ def _requested_data(**override) -> dict:
     data = {
         "command_id": str(uuid.uuid4()),
         "actor_id": 42,
+        "actor_authz_version": 3,
+        "expires_at": (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)).isoformat(),
         "order_id": 1,
         "expected_status": "created",
         "target_status": "confirmed",
@@ -459,3 +461,53 @@ def test_total_wider_than_db_field_rejected():
     payload["data"]["total"] = "100000000.00"  # 11 digits -> exceeds max_digits=10
     with pytest.raises(ValidationError):
         parse_event(payload)
+
+
+def test_transition_requested_authz_version_required():
+    payload = _requested_data()
+    del payload["actor_authz_version"]
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, payload))
+
+
+def test_transition_requested_authz_version_must_be_positive():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(actor_authz_version=0)))
+
+
+def test_transition_requested_expires_at_required():
+    payload = _requested_data()
+    del payload["expires_at"]
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(EVENT_ORDER_TRANSITION_REQUESTED, payload))
+
+
+def test_transition_requested_naive_expires_at_rejected():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REQUESTED, _requested_data(expires_at="2026-01-01T00:00:00")))
+
+
+def test_transition_rejected_expired_must_not_carry_status():
+    with pytest.raises(ValidationError):
+        parse_event(_transition_env(
+            EVENT_ORDER_TRANSITION_REJECTED,
+            {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "command_expired",
+             "current_status": "created"},
+        ))
+
+
+def test_transition_rejected_expired_valid_without_status():
+    _e, data = parse_event(_transition_env(
+        EVENT_ORDER_TRANSITION_REJECTED,
+        {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "command_expired"},
+    ))
+    assert data.reject_code == "command_expired" and data.current_status is None
+
+
+def test_transition_rejected_actor_not_authorized_valid_without_status():
+    _e, data = parse_event(_transition_env(
+        EVENT_ORDER_TRANSITION_REJECTED,
+        {"command_id": str(uuid.uuid4()), "order_id": 1, "reject_code": "actor_not_authorized"},
+    ))
+    assert data.reject_code == "actor_not_authorized" and data.current_status is None

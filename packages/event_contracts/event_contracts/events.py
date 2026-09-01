@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from event_contracts.envelope import Envelope
 
@@ -144,9 +144,17 @@ class SnapshotControlData(BaseModel):
 
 
 class TransitionRejectCode(StrEnum):
-    stale_status = "stale_status"          # order was not at expected_status under lock
-    invalid_transition = "invalid_transition"  # target_status not reachable from current
+    command_expired = "command_expired"
+    actor_not_authorized = "actor_not_authorized"
     order_not_found = "order_not_found"
+    stale_status = "stale_status"
+    invalid_transition = "invalid_transition"
+
+
+# codes reached with the order locked, so only these carry current_status
+ORDER_LOADED_REJECT_CODES = frozenset(
+    {TransitionRejectCode.stale_status, TransitionRejectCode.invalid_transition}
+)
 
 
 # free-text width matches storefront OrderStatusHistory.note so a reason/detail always fits
@@ -157,10 +165,21 @@ class OrderTransitionRequestedData(BaseModel):
     model_config = ConfigDict(extra="ignore")
     command_id: uuid.UUID
     actor_id: int = Field(gt=0)
+    # authz version at issue time, re-checked by the writer under lock
+    actor_authz_version: int = Field(ge=1)
+    # deadline carried in the message so a late delivery cannot apply
+    expires_at: datetime
     order_id: int = Field(gt=0)
     expected_status: OrderStatus
     target_status: OrderStatus
     reason: str = Field(default="", max_length=NOTE_MAX)
+
+    @field_validator("expires_at")
+    @classmethod
+    def _expires_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("expires_at must be timezone-aware (UTC)")
+        return value.astimezone(UTC)
 
     @model_validator(mode="after")
     def _target_differs(self) -> "OrderTransitionRequestedData":
@@ -188,17 +207,16 @@ class OrderTransitionRejectedData(BaseModel):
     command_id: uuid.UUID
     order_id: int = Field(gt=0)
     reject_code: TransitionRejectCode
-    # order_not_found carries no status; every other reject code is found under lock
     current_status: OrderStatus | None = None
     detail: str = Field(default="", max_length=NOTE_MAX)
 
     @model_validator(mode="after")
     def _current_status_matches_code(self) -> "OrderTransitionRejectedData":
-        not_found = self.reject_code == TransitionRejectCode.order_not_found
-        if not_found and self.current_status is not None:
-            raise ValueError("order_not_found must not carry current_status")
-        if not not_found and self.current_status is None:
+        loaded = self.reject_code in ORDER_LOADED_REJECT_CODES
+        if loaded and self.current_status is None:
             raise ValueError(f"{self.reject_code} requires current_status")
+        if not loaded and self.current_status is not None:
+            raise ValueError(f"{self.reject_code} must not carry current_status")
         return self
 
 
