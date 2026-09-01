@@ -4,6 +4,7 @@
 # Web framework / API
 Django==5.2.16
 django-ninja==1.6.2
+pydantic==2.13.5
 
 # Database
 psycopg[binary]==3.3.4

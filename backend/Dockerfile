@@ -17,7 +17,7 @@ RUN apt-get update \
 # build context is the repository root (needs packages/ and backend/)
 COPY packages/event_contracts /packages/event_contracts
 COPY backend/ /app/
-RUN pip install --upgrade pip && pip install -r requirements.txt     && pip install --no-deps /packages/event_contracts && pip install --no-deps .
+RUN pip install --upgrade pip && pip install -r requirements.txt && pip install /packages/event_contracts && pip install --no-deps .
 
 RUN chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]
