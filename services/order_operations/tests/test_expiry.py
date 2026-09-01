@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from django.utils import timezone
 
@@ -6,6 +8,8 @@ from operations.commands import create_transition_command
 from operations.models import OperationAuditLog, OperationCommand, OperationsOutbox
 
 pytestmark = pytest.mark.django_db
+
+LEASE = timedelta(seconds=60)
 
 
 def _command(key="k1"):
@@ -18,6 +22,15 @@ def _command(key="k1"):
 
 def _outbox(command):
     return OperationsOutbox.objects.get(command=command)
+
+
+def _claim(command):
+    return commands.claim_for_publish(_outbox(command).pk, worker="w1", lease=LEASE)
+
+
+def _expire_deadline(command):
+    command.deadline_at = timezone.now() - timedelta(seconds=1)
+    command.save(update_fields=["deadline_at"])
 
 
 def test_expiry_without_any_publish_attempt_suppresses_the_row():
@@ -33,8 +46,7 @@ def test_expiry_without_any_publish_attempt_suppresses_the_row():
 
 def test_expiry_after_a_publish_attempt_leaves_the_command_open():
     command = _command()
-    row = _outbox(command)
-    commands.mark_publish_attempt(row)
+    assert _claim(command) is not None
 
     result = commands.expire_before_dispatch(command)
 
@@ -43,16 +55,14 @@ def test_expiry_after_a_publish_attempt_leaves_the_command_open():
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
-def test_publish_attempt_is_stamped_once():
+def test_timed_out_is_never_downgraded_to_rejected():
     command = _command()
-    row = _outbox(command)
+    commands.mark_timed_out(command)
 
-    commands.mark_publish_attempt(row)
-    first = _outbox(command).publish_attempted_at
-    commands.mark_publish_attempt(_outbox(command))
+    result = commands.expire_before_dispatch(command)
 
-    assert first is not None
-    assert _outbox(command).publish_attempted_at == first
+    assert result.status == OperationCommand.Status.TIMED_OUT
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
 def test_expiry_does_not_reopen_a_terminal_command():
@@ -76,16 +86,44 @@ def test_suppressed_row_is_not_suppressed_twice():
     assert OperationAuditLog.objects.filter(command_id=command.command_id).count() == before
 
 
-def test_timed_out_command_can_still_be_expired_only_when_never_attempted():
+def test_claim_stamps_the_attempt_once_and_takes_the_lease():
     command = _command()
-    commands.mark_timed_out(command)
 
-    result = commands.expire_before_dispatch(command)
+    first = _claim(command)
+    stamped = first.publish_attempted_at
+    second = commands.claim_for_publish(_outbox(command).pk, worker="w2", lease=LEASE)
 
-    assert result.status == OperationCommand.Status.REJECTED
-    assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
+    assert stamped is not None and first.locked_by == "w1"
+    assert second.publish_attempted_at == stamped
+    assert second.locked_by == "w2"
 
 
-def test_deadline_is_stored_on_the_command():
+def test_suppressed_row_is_never_claimed_again():
     command = _command()
-    assert command.deadline_at is not None and command.deadline_at > timezone.now()
+    commands.expire_before_dispatch(command)
+
+    assert _claim(command) is None  # suppression guarantees no network publish
+
+
+def test_claim_refuses_an_expired_row_that_was_never_attempted():
+    command = _command()
+    _expire_deadline(command)
+
+    assert _claim(command) is None
+
+
+def test_claim_allows_an_expired_row_that_was_already_attempted():
+    command = _command()
+    assert _claim(command) is not None
+    _expire_deadline(command)
+
+    # already on the wire: keep publishing so the storefront can resolve it with an outcome
+    assert _claim(command) is not None
+
+
+def test_claim_refuses_a_terminal_command():
+    command = _command()
+    command.status = OperationCommand.Status.SUCCEEDED
+    command.save(update_fields=["status"])
+
+    assert _claim(command) is None

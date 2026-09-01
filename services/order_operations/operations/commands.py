@@ -169,28 +169,50 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
         return locked
 
 
-def mark_publish_attempt(row: OperationsOutbox) -> None:
-    """stamps the row before the network call so a lost confirm still counts as a maybe-delivery"""
-    if row.publish_attempted_at is None:
-        row.publish_attempted_at = timezone.now()
-        row.save(update_fields=["publish_attempted_at"])
+def claim_for_publish(row_id: int, *, worker: str, lease: timedelta) -> OperationsOutbox | None:
+    """locks one publishable row and stamps the attempt, or returns None when it must not be sent
+
+    Locks outbox before command; expire_before_dispatch takes the same order. The stamp is
+    written inside this transaction, so a row handed to the network can no longer be suppressed.
+    """
+    with transaction.atomic():
+        row = (
+            OperationsOutbox.objects.select_for_update(skip_locked=True)
+            .filter(pk=row_id, status=OperationsOutbox.Status.PENDING)
+            .first()
+        )
+        if row is None:
+            return None
+        if row.command_id is not None:
+            command = OperationCommand.objects.select_for_update().get(pk=row.command_id)
+            if command.status in OperationCommand.TERMINAL:
+                return None
+            expired = command.deadline_at is not None and command.deadline_at <= timezone.now()
+            if expired and row.publish_attempted_at is None:
+                return None  # never sent and past its deadline: expiry finalises it instead
+        now = timezone.now()
+        if row.publish_attempted_at is None:
+            row.publish_attempted_at = now
+        row.locked_by = worker
+        row.locked_until = now + lease
+        row.save(update_fields=["publish_attempted_at", "locked_by", "locked_until"])
+        return row
 
 
 def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
-    """
-    finalises an expired command only while it provably never reached the broker
+    """finalises an expired command only while it provably never reached the broker
 
-    A row that was already handed to the network may have been delivered even without a confirm,
-    so it keeps its pending outbox entry and may only be finalised by a real outcome.
+    Restricted to a still pending command: timed_out already reports unresolved delivery, and
+    downgrading it locally would make the terminal state depend on which worker ran first.
     """
     with transaction.atomic():
-        locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
         row = (
             OperationsOutbox.objects.select_for_update()
-            .filter(command=locked)
+            .filter(command_id=command.pk)
             .first()
         )
-        if locked.status in OperationCommand.TERMINAL:
+        locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        if locked.status != OperationCommand.Status.PENDING:
             return locked
         if row is None or row.publish_attempted_at is not None:
             return locked
