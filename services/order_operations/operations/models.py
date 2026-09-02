@@ -168,6 +168,7 @@ class OperationsOutbox(models.Model):
         PENDING = "pending", "Pending"
         PUBLISHED = "published", "Published"
         SUPPRESSED = "suppressed", "Suppressed"  # expired before any publish attempt
+        SETTLED = "settled", "Settled"  # an outcome proved delivery, the confirm was lost
 
     event_id = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
     correlation_id = models.UUIDField(default=uuid.uuid4, editable=False)

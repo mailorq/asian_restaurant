@@ -1,9 +1,10 @@
-"""Operations command creation and outcome application.
+"""
+command creation and outcome application
 
-Operations owns only the command lifecycle; it never writes storefront state. Creation is
-idempotent by (actor_id, command_type, target, idempotency_key). An outcome may finalise a
-command from any non-terminal state — including timed_out — so a late outcome never leaves a
-command that the storefront actually applied stuck as timed_out.
+operations owns only the command lifecycle and never writes storefront state. creation is
+idempotent by (actor_id, command_type, target, idempotency_key). an outcome finalises a command
+from any non-terminal state, including timed_out, so a command the storefront actually applied
+is never left stuck, and it closes the outbox row the confirm never closed
 """
 
 import uuid
@@ -116,6 +117,29 @@ def _dedup(existing: OperationCommand, request: dict) -> OperationCommand:
     return existing
 
 
+def _deadline_passed(command: OperationCommand, now) -> bool:
+    # a command without a deadline never expires on its own
+    return command.deadline_at is not None and command.deadline_at <= now
+
+
+def _settle(row: OperationsOutbox | None) -> None:
+    """
+    closes a still-pending row whose command already carries an outcome
+
+    the outcome itself proves the request reached the storefront, so the attempt is finished even
+    though the publisher confirm never came back. Leaving the row pending would strand it: no
+    claim ever takes a row whose command is terminal, so it would hold the head of the backlog
+    forever and keep the oldest-pending alert firing
+    """
+    if row is None or row.status != OperationsOutbox.Status.PENDING:
+        return
+    row.status = OperationsOutbox.Status.SETTLED
+    row.locked_until = None
+    row.locked_by = ""
+    row.lease_token = None
+    row.save(update_fields=["status", "locked_until", "locked_by", "lease_token"])
+
+
 def _assert_outcome_matches_intent(command: OperationCommand, data, success: bool) -> None:
     # the outcome must describe the transition this command actually requested, so an outcome for
     # a different target (e.g. created->cancelled) can never finalise a created->confirmed command
@@ -152,13 +176,15 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
         raise OutcomeMismatch("correlation_id mismatch")
 
     with transaction.atomic():
+        row = OperationsOutbox.objects.select_for_update().filter(command_id=command.pk).first()
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
         # the outcome must descend from this command's own request event, so a misrouted or forged outcome cannot finalise it
         if str(causation_id) != str(locked.request_event_id):
             raise OutcomeMismatch("causation_id does not match command request_event_id")
         _assert_outcome_matches_intent(locked, data, success)
         if locked.status in OperationCommand.TERMINAL:
-            return locked  # terminal is final; a redelivered outcome is a no-op
+            _settle(row)  # terminal is final; the row is only closed if an earlier pass missed it
+            return locked
         if success:
             locked.status = OperationCommand.Status.SUCCEEDED
             locked.result_code = ""
@@ -168,6 +194,7 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
             locked.result_code = str(data.reject_code)
             locked.result_detail = data.detail
         locked.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+        _settle(row)
         return locked
 
 
@@ -218,8 +245,7 @@ def claim_or_expire(row_id: int, *, worker: str, lease: timedelta):
             command = OperationCommand.objects.select_for_update().get(pk=row.command_id)
             if command.status in OperationCommand.TERMINAL:
                 return ClaimResult.UNAVAILABLE, None
-            expired = command.deadline_at is not None and command.deadline_at <= now
-            if expired and row.publish_attempted_at is None:
+            if _deadline_passed(command, now) and row.publish_attempted_at is None:
                 if command.status == OperationCommand.Status.PENDING:
                     _suppress_expired(row, command)
                     return ClaimResult.EXPIRED, None
@@ -234,12 +260,28 @@ def claim_or_expire(row_id: int, *, worker: str, lease: timedelta):
         return ClaimResult.CLAIMED, row
 
 
+def _held(row: OperationsOutbox) -> dict | None:
+    """
+    filter matching the exact live lease this worker holds, or None when it holds none
+
+    a NULL token is not a lease: `lease_token=None` compiles to IS NULL and would match every
+    unclaimed row, so completing an attempt that was never made has to be refused here
+    """
+    if row.lease_token is None:
+        return None
+    return dict(
+        pk=row.pk, lease_token=row.lease_token, status=OperationsOutbox.Status.PENDING,
+        locked_until__gt=timezone.now(),
+    )
+
+
 def mark_published(row: OperationsOutbox) -> bool:
     """completes the attempt only if this worker still holds the lease it was given"""
+    held = _held(row)
+    if held is None:
+        return False
     return bool(
-        OperationsOutbox.objects.filter(
-            pk=row.pk, lease_token=row.lease_token, status=OperationsOutbox.Status.PENDING
-        ).update(
+        OperationsOutbox.objects.filter(**held).update(
             status=OperationsOutbox.Status.PUBLISHED, published_at=timezone.now(),
             attempts=F("attempts") + 1, locked_until=None, locked_by="", lease_token=None,
         )
@@ -248,8 +290,11 @@ def mark_published(row: OperationsOutbox) -> bool:
 
 def schedule_retry(row: OperationsOutbox, *, backoff: timedelta, error: str = "") -> bool:
     """releases the lease for a later attempt, only for the worker that still holds it"""
+    held = _held(row)
+    if held is None:
+        return False
     return bool(
-        OperationsOutbox.objects.filter(pk=row.pk, lease_token=row.lease_token).update(
+        OperationsOutbox.objects.filter(**held).update(
             attempts=F("attempts") + 1, next_attempt_at=timezone.now() + backoff,
             last_error=error[:1000], locked_until=None, locked_by="", lease_token=None,
         )
@@ -265,6 +310,9 @@ def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
             .first()
         )
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        # read the clock under the locks: a deadline may pass while this waits for them
+        if not _deadline_passed(locked, timezone.now()):
+            return locked
         if locked.status != OperationCommand.Status.PENDING:
             return locked
         if row is None or row.publish_attempted_at is not None:
@@ -298,13 +346,15 @@ def mark_timed_out(command: OperationCommand) -> OperationCommand:
     """
     deadline elapsed with delivery unresolved; NOT terminal, a late outcome may finalise it
 
-    a pending command counts as unresolved only once it actually reached the network. Marking a
-    never-sent one timed_out would strand it forever: the claim refuses an expired row and
-    expiry only acts on a pending command, so nothing would ever touch it again.
+    unresolved means two things at once: the deadline is behind us and the request actually
+    reached the network. Marking a never-sent command timed_out would strand it forever, since
+    the claim refuses an expired row and expiry only acts on a pending command.
     """
     with transaction.atomic():
         row = OperationsOutbox.objects.select_for_update().filter(command_id=command.pk).first()
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        if not _deadline_passed(locked, timezone.now()):
+            return locked
         if locked.status == OperationCommand.Status.PENDING:
             if row is None or row.publish_attempted_at is None:
                 return locked

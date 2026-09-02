@@ -2,6 +2,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 from event_contracts import OrderTransitionRejectedData, OrderTransitionSucceededData
 from pydantic import ValidationError
 
@@ -20,11 +21,14 @@ def _create(actor_id=42, order_id=1, expected="created", target="confirmed", key
     )
 
 
-def _attempt(command):
-    """a command can only be timed_out or re-dispatched once it reached the network"""
+def _unresolved(command):
+    """delivery is unresolved only once the request reached the network and its time ran out"""
     row = OperationsOutbox.objects.get(command=command)
     commands.claim_or_expire(row.pk, worker="w1", lease=timedelta(seconds=60))
     OperationsOutbox.objects.filter(pk=row.pk).update(locked_until=None)
+    OperationCommand.objects.filter(pk=command.pk).update(
+        deadline_at=timezone.now() - timedelta(seconds=1)
+    )
 
 
 def _succeeded(command, from_status="created", status="confirmed"):
@@ -86,7 +90,7 @@ def test_equal_expected_and_target_rejected():
 
 def test_timed_out_then_late_success_finalizes_succeeded():
     command, _ = _create()
-    _attempt(command)
+    _unresolved(command)
     commands.mark_timed_out(command)
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.TIMED_OUT
     result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
@@ -144,9 +148,17 @@ def test_dispatch_failed_then_redispatch():
     assert result.status == OperationCommand.Status.DISPATCHED
 
 
+def test_timeout_before_the_deadline_leaves_the_command_dispatched():
+    command, _ = _create()
+    commands.mark_dispatched(command)
+
+    # the deadline still holds, so delivery is not yet unresolved
+    assert commands.mark_timed_out(command).status == OperationCommand.Status.DISPATCHED
+
+
 def test_timed_out_is_not_redispatched():
     command, _ = _create()
-    _attempt(command)
+    _unresolved(command)
     commands.mark_timed_out(command)
     result = commands.mark_dispatched(command)
     assert result.status == OperationCommand.Status.TIMED_OUT  # deadline elapsed; stays a signal

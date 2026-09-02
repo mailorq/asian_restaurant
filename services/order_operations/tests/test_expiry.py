@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 from django.utils import timezone
+from event_contracts import OrderTransitionRejectedData, OrderTransitionSucceededData
 
 from operations import commands
 from operations.commands import ClaimResult, create_transition_command
@@ -30,7 +31,27 @@ def _claim(command, worker="w1", lease=LEASE):
 
 def _expire_deadline(command):
     command.deadline_at = timezone.now() - timedelta(seconds=1)
-    command.save(update_fields=["deadline_at"])
+    OperationCommand.objects.filter(pk=command.pk).update(deadline_at=command.deadline_at)
+
+
+def _succeeded(command):
+    return OrderTransitionSucceededData(
+        command_id=command.command_id, order_id=int(command.target),
+        from_status="created", status="confirmed",
+    )
+
+
+def _rejected(command):
+    return OrderTransitionRejectedData(
+        command_id=command.command_id, order_id=int(command.target),
+        reject_code="stale_status", current_status="preparing", detail="x",
+    )
+
+
+def _outcome(command, data):
+    return commands.apply_transition_outcome(
+        data, correlation_id=command.correlation_id, causation_id=command.request_event_id
+    )
 
 
 def _release_lease(command):
@@ -42,6 +63,7 @@ def _release_lease(command):
 # --- expiry ---------------------------------------------------------------
 def test_expiry_without_any_publish_attempt_suppresses_the_row():
     command = _command()
+    _expire_deadline(command)
 
     result = commands.expire_before_dispatch(command)
 
@@ -54,6 +76,7 @@ def test_expiry_without_any_publish_attempt_suppresses_the_row():
 def test_expiry_after_a_publish_attempt_leaves_the_command_open():
     command = _command()
     assert _claim(command)[0] is ClaimResult.CLAIMED
+    _expire_deadline(command)
 
     result = commands.expire_before_dispatch(command)
 
@@ -64,7 +87,8 @@ def test_expiry_after_a_publish_attempt_leaves_the_command_open():
 
 def test_timed_out_is_never_downgraded_to_rejected():
     command = _command()
-    _claim(command)  # only an attempted command can be timed_out
+    _claim(command)  # only an attempted command past its deadline can be timed_out
+    _expire_deadline(command)
     commands.mark_timed_out(command)
 
     result = commands.expire_before_dispatch(command)
@@ -75,6 +99,7 @@ def test_timed_out_is_never_downgraded_to_rejected():
 
 def test_expiry_does_not_reopen_a_terminal_command():
     command = _command()
+    _expire_deadline(command)
     command.status = OperationCommand.Status.SUCCEEDED
     command.save(update_fields=["status"])
 
@@ -84,12 +109,72 @@ def test_expiry_does_not_reopen_a_terminal_command():
 
 def test_suppressed_row_is_not_suppressed_twice():
     command = _command()
+    _expire_deadline(command)
     commands.expire_before_dispatch(command)
     before = OperationAuditLog.objects.filter(command_id=command.command_id).count()
 
     commands.expire_before_dispatch(command)
 
     assert OperationAuditLog.objects.filter(command_id=command.command_id).count() == before
+
+
+def test_expiry_refuses_a_command_whose_deadline_has_not_passed():
+    command = _command()
+
+    result = commands.expire_before_dispatch(command)
+
+    assert result.status == OperationCommand.Status.PENDING
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+    assert not OperationAuditLog.objects.filter(result="command_expired").exists()
+
+
+def test_expiry_refuses_a_command_without_a_deadline():
+    command = _command()
+    OperationCommand.objects.filter(pk=command.pk).update(deadline_at=None)
+
+    result = commands.expire_before_dispatch(command)
+
+    assert result.status == OperationCommand.Status.PENDING
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
+def test_timeout_refuses_a_command_whose_deadline_has_not_passed():
+    command = _command()
+    _claim(command)  # on the wire, but its time is not up yet
+
+    assert commands.mark_timed_out(command).status == OperationCommand.Status.PENDING
+
+
+# --- outcome closes the attempt ------------------------------------------
+def test_outcome_settles_a_row_whose_publisher_confirm_was_lost():
+    command = _command()
+    _, row = _claim(command)  # attempt stamped, then the relay dies before the confirm
+    assert row.publish_attempted_at is not None
+
+    assert _outcome(command, _succeeded(command)).status == OperationCommand.Status.SUCCEEDED
+
+    stored = _outbox(command)
+    assert stored.status == OperationsOutbox.Status.SETTLED
+    assert stored.lease_token is None and stored.locked_until is None and stored.locked_by == ""
+    assert _claim(command)[0] is ClaimResult.UNAVAILABLE
+
+
+def test_rejected_outcome_also_settles_the_row():
+    command = _command()
+    _claim(command)
+
+    assert _outcome(command, _rejected(command)).status == OperationCommand.Status.REJECTED
+    assert _outbox(command).status == OperationsOutbox.Status.SETTLED
+
+
+def test_published_row_is_left_alone_by_the_outcome():
+    command = _command()
+    _, row = _claim(command)
+    commands.mark_published(row)
+
+    _outcome(command, _succeeded(command))
+
+    assert _outbox(command).status == OperationsOutbox.Status.PUBLISHED
 
 
 # --- lease ----------------------------------------------------------------
@@ -136,6 +221,46 @@ def test_superseded_worker_cannot_schedule_retry():
     assert _outbox(command).lease_token == fresh.lease_token
 
 
+def test_unclaimed_row_cannot_be_marked_published():
+    command = _command()
+
+    # a NULL token is not a lease; without this the IS NULL match would publish an event that
+    # was never handed to the broker
+    assert commands.mark_published(_outbox(command)) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
+def test_unclaimed_row_cannot_schedule_retry():
+    command = _command()
+
+    assert commands.schedule_retry(_outbox(command), backoff=timedelta(seconds=30)) is False
+    assert _outbox(command).attempts == 0
+
+
+def test_a_row_without_a_token_is_never_completed():
+    command = _command()
+    # a live lock window with no token: the two fencing checks only differ here, so this is
+    # what pins IS NULL from passing for a lease that was never handed out
+    OperationsOutbox.objects.filter(command=command).update(
+        locked_until=timezone.now() + LEASE, locked_by="w1"
+    )
+
+    row = _outbox(command)
+    assert commands.mark_published(row) is False
+    assert commands.schedule_retry(row, backoff=timedelta(seconds=30)) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
+def test_expired_lease_cannot_be_completed():
+    command = _command()
+    _, row = _claim(command)
+    _release_lease(command)
+
+    assert commands.mark_published(row) is False
+    assert commands.schedule_retry(row, backoff=timedelta(seconds=30)) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
 def test_lease_holder_completes_and_releases_the_row():
     command = _command()
     _, row = _claim(command)
@@ -159,6 +284,7 @@ def test_retry_releases_the_lease_and_defers_the_row():
 # --- claim decisions ------------------------------------------------------
 def test_suppressed_row_is_never_claimed_again():
     command = _command()
+    _expire_deadline(command)
     commands.expire_before_dispatch(command)
 
     assert _claim(command)[0] is ClaimResult.UNAVAILABLE
