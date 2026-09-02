@@ -58,6 +58,9 @@ ctl set_permissions -p operations operations_bridge \
 # command publisher: cannot declare anything and cannot read. Resource write alone would
 # allow any routing key, so the routing key is pinned with a topic permission as well
 ctl set_permissions -p storefront operations_commands '^$' '^commands$' '^$'
+# converge, do not merge: a topic permission left over from an older layout would still grant
+# its routing keys
+ctl clear_topic_permissions -p storefront operations_commands 2>/dev/null || true
 ctl set_topic_permissions -p storefront operations_commands commands '^orders\.transition\.requested$' '^$'
 
 # revoke any stale rights in vhosts each user must not touch (isolation is enforced,
@@ -69,5 +72,11 @@ revoke storefront operations_consumer
 revoke / operations_bridge
 revoke / operations_commands
 revoke operations operations_commands
+
+# RabbitMQ caches authorisation per connection, so a narrowed grant does not apply to an
+# already open channel until it reconnects
+for u in storefront_app operations_consumer operations_bridge operations_commands; do
+  ctl close_all_user_connections "$u" 'permissions reprovisioned' 2>/dev/null || true
+done
 
 echo "rabbitmq provisioning complete"

@@ -64,6 +64,43 @@ jobs:
       - run: bash scripts/check_no_secrets.sh
       - run: bash scripts/check_prod_config.sh
 
+  command-permissions:
+    # the publisher credential is a security boundary, so its restrictions are asserted against a
+    # real broker instead of being skipped when no broker is configured
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pika pytest
+      - name: start a clean broker with the dev definitions
+        run: |
+          docker run -d --name rabbit             -p 5672:5672             -v "$PWD/ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro"             -v "$PWD/ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro"             -v "$PWD/ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro"             rabbitmq:3.13-management-alpine
+          for i in $(seq 1 60); do
+            docker exec rabbit rabbitmq-diagnostics -q ping >/dev/null 2>&1 && break
+            sleep 3
+          done
+          docker exec rabbit rabbitmq-diagnostics -q check_running
+      - name: converge permissions with the production provisioning script
+        run: |
+          docker exec -i             -e RABBITMQ_ADMIN_USER=asian -e RABBITMQ_ADMIN_PASSWORD=change-me-rabbit             -e STOREFRONT_MQ_PASSWORD=change-me-rabbit -e OPERATIONS_MQ_PASSWORD=change-me-ops-mq             -e BRIDGE_MQ_PASSWORD=change-me-bridge-mq             -e OPERATIONS_COMMANDS_MQ_PASSWORD=change-me-commands-mq             rabbit bash -s < ops/rabbitmq/provision.sh
+      - name: declare the command topology as its owner
+        run: |
+          PYTHONPATH=backend python -c "
+          import pika
+          from orders import command_messaging as cm
+          conn = pika.BlockingConnection(pika.URLParameters('amqp://storefront_app:change-me-rabbit@localhost:5672/storefront'))
+          cm.declare_topology(conn.channel())
+          conn.close()
+          "
+      - name: publisher restrictions must hold
+        env:
+          COMMANDS_MQ_URL_FOR_PERMISSIONS: amqp://operations_commands:change-me-commands-mq@localhost:5672/storefront
+          ADMIN_MQ_URL_FOR_PERMISSIONS: amqp://asian:change-me-rabbit@localhost:5672/storefront
+          REQUIRE_COMMAND_PERMISSION_TESTS: "1"
+        run: pytest services/order_operations/tests/test_command_permissions.py -q
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

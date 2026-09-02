@@ -14,12 +14,21 @@ from pika.exceptions import ChannelClosedByBroker
 URL = os.environ.get("COMMANDS_MQ_URL_FOR_PERMISSIONS")
 ADMIN_URL = os.environ.get("ADMIN_MQ_URL_FOR_PERMISSIONS")
 
+# сш sets REQUIRE_COMMAND_PERMISSION_TESTS so a missing broker fails the job instead of
+# silently skipping the checks that guard the publisher credential
+if os.environ.get("REQUIRE_COMMAND_PERMISSION_TESTS") == "1" and not (URL and ADMIN_URL):
+    raise RuntimeError(
+        "REQUIRE_COMMAND_PERMISSION_TESTS is set but COMMANDS_MQ_URL_FOR_PERMISSIONS "
+        "or ADMIN_MQ_URL_FOR_PERMISSIONS is missing"
+    )
+
 pytestmark = pytest.mark.skipif(
     not URL or not ADMIN_URL, reason="COMMANDS_MQ_URL_FOR_PERMISSIONS not configured"
 )
 
 EXCHANGE = "commands"
 ALLOWED_KEY = "orders.transition.requested"
+QUEUE = "commands.orders"
 
 
 @pytest.fixture
@@ -36,16 +45,46 @@ def _channel(conn):
     return channel
 
 
-def _publish(channel, routing_key, exchange=EXCHANGE):
+def _publish(channel, routing_key, exchange=EXCHANGE, *, mandatory=False, body=b"{}"):
     channel.basic_publish(
-        exchange=exchange, routing_key=routing_key, body=b"{}",
+        exchange=exchange, routing_key=routing_key, body=body,
         properties=pika.BasicProperties(delivery_mode=2),
-        mandatory=False,
+        mandatory=mandatory,
     )
+
+
+def _drain(queue):
+    admin = pika.BlockingConnection(pika.URLParameters(ADMIN_URL))
+    try:
+        channel = admin.channel()
+        channel.queue_purge(queue)
+    finally:
+        admin.close()
+
+
+def _get(queue):
+    admin = pika.BlockingConnection(pika.URLParameters(ADMIN_URL))
+    try:
+        method, _props, body = admin.channel().basic_get(queue=queue, auto_ack=True)
+        return method, body
+    finally:
+        admin.close()
 
 
 def test_publisher_may_send_on_the_agreed_routing_key(publisher):
     _publish(_channel(publisher), ALLOWED_KEY)
+
+
+def test_allowed_publish_actually_reaches_the_command_queue(publisher):
+    _drain(QUEUE)
+    marker = b'{"probe": "routing"}'
+
+    # mandatory proves the binding exists: authorisation alone would pass with a broken topology
+    _publish(_channel(publisher), ALLOWED_KEY, mandatory=True, body=marker)
+
+    method, body = _get(QUEUE)
+    assert method is not None, "published message did not reach commands.orders"
+    assert body == marker
 
 
 def test_publisher_cannot_use_another_routing_key(publisher):
