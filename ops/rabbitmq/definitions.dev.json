@@ -1,29 +1,112 @@
 {
   "rabbit_version": "3.13.0",
   "users": [
-    {"name": "asian", "password": "change-me-rabbit", "tags": ["administrator"]},
-    {"name": "storefront_app", "password": "change-me-rabbit", "tags": []},
-    {"name": "operations_consumer", "password": "change-me-ops-mq", "tags": []},
-    {"name": "operations_bridge", "password": "change-me-bridge-mq", "tags": []}
+    {
+      "name": "asian",
+      "password": "change-me-rabbit",
+      "tags": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "storefront_app",
+      "password": "change-me-rabbit",
+      "tags": []
+    },
+    {
+      "name": "operations_consumer",
+      "password": "change-me-ops-mq",
+      "tags": []
+    },
+    {
+      "name": "operations_bridge",
+      "password": "change-me-bridge-mq",
+      "tags": []
+    },
+    {
+      "name": "operations_commands",
+      "password": "change-me-commands-mq",
+      "tags": []
+    }
   ],
   "vhosts": [
-    {"name": "/"},
-    {"name": "storefront"},
-    {"name": "operations"}
+    {
+      "name": "/"
+    },
+    {
+      "name": "storefront"
+    },
+    {
+      "name": "operations"
+    }
   ],
   "permissions": [
-    {"user": "asian", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*"},
-    {"user": "asian", "vhost": "storefront", "configure": ".*", "write": ".*", "read": ".*"},
-    {"user": "asian", "vhost": "operations", "configure": ".*", "write": ".*", "read": ".*"},
-
-    {"user": "storefront_app", "vhost": "storefront", "configure": ".*", "write": ".*", "read": ".*"},
-
-    {"user": "operations_consumer", "vhost": "operations", "configure": "^operations\\.", "write": "^operations\\.", "read": "^operations\\."},
-
-    {"user": "operations_bridge", "vhost": "storefront", "configure": "^operations\\.bridge\\.", "write": "^operations\\.bridge\\.", "read": "^(orders|operations\\.bridge\\.)"},
-    {"user": "operations_bridge", "vhost": "operations", "configure": "^operations\\.events$", "write": "^operations\\.events$", "read": "^$"}
+    {
+      "user": "asian",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "asian",
+      "vhost": "storefront",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "asian",
+      "vhost": "operations",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "storefront_app",
+      "vhost": "storefront",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "operations_consumer",
+      "vhost": "operations",
+      "configure": "^operations\\.",
+      "write": "^operations\\.",
+      "read": "^operations\\."
+    },
+    {
+      "user": "operations_bridge",
+      "vhost": "storefront",
+      "configure": "^operations\\.bridge\\.",
+      "write": "^operations\\.bridge\\.",
+      "read": "^(orders|operations\\.bridge\\.)"
+    },
+    {
+      "user": "operations_bridge",
+      "vhost": "operations",
+      "configure": "^operations\\.events$",
+      "write": "^operations\\.events$",
+      "read": "^$"
+    },
+    {
+      "user": "operations_commands",
+      "vhost": "storefront",
+      "configure": "^$",
+      "write": "^commands$",
+      "read": "^$"
+    }
   ],
-  "topic_permissions": [],
+  "topic_permissions": [
+    {
+      "user": "operations_commands",
+      "vhost": "storefront",
+      "exchange": "commands",
+      "write": "^orders\\.transition\\.requested$",
+      "read": "^$"
+    }
+  ],
   "parameters": [],
   "policies": [],
   "queues": [],

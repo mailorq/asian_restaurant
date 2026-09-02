@@ -6,7 +6,7 @@
 #
 # Required env:
 #   RABBITMQ_ADMIN_USER RABBITMQ_ADMIN_PASSWORD
-#   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD
+#   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD OPERATIONS_COMMANDS_MQ_PASSWORD
 # Optional env:
 #   RABBITMQ_NODE  target a remote node (e.g. rabbit@rabbitmq) — set by the one-shot
 #                  rabbitmq-provision service; unset when run inside the broker.
@@ -14,7 +14,7 @@
 # Run inside the broker container, e.g.:
 #   docker compose exec -T \
 #     -e RABBITMQ_ADMIN_USER -e RABBITMQ_ADMIN_PASSWORD \
-#     -e STOREFRONT_MQ_PASSWORD -e OPERATIONS_MQ_PASSWORD -e BRIDGE_MQ_PASSWORD \
+#     -e STOREFRONT_MQ_PASSWORD -e OPERATIONS_MQ_PASSWORD -e BRIDGE_MQ_PASSWORD -e OPERATIONS_COMMANDS_MQ_PASSWORD \
 #     rabbitmq bash -s < ops/rabbitmq/provision.sh
 set -euo pipefail
 
@@ -23,6 +23,7 @@ set -euo pipefail
 : "${STOREFRONT_MQ_PASSWORD:?set STOREFRONT_MQ_PASSWORD}"
 : "${OPERATIONS_MQ_PASSWORD:?set OPERATIONS_MQ_PASSWORD}"
 : "${BRIDGE_MQ_PASSWORD:?set BRIDGE_MQ_PASSWORD}"
+: "${OPERATIONS_COMMANDS_MQ_PASSWORD:?set OPERATIONS_COMMANDS_MQ_PASSWORD}"
 
 ctl() {
   if [ -n "${RABBITMQ_NODE:-}" ]; then rabbitmqctl -n "$RABBITMQ_NODE" "$@"; else rabbitmqctl "$@"; fi
@@ -41,6 +42,7 @@ ctl set_user_tags "$RABBITMQ_ADMIN_USER" administrator
 ensure_user storefront_app "$STOREFRONT_MQ_PASSWORD"
 ensure_user operations_consumer "$OPERATIONS_MQ_PASSWORD"
 ensure_user operations_bridge "$BRIDGE_MQ_PASSWORD"
+ensure_user operations_commands "$OPERATIONS_COMMANDS_MQ_PASSWORD"
 
 for v in / storefront operations; do
   ctl set_permissions -p "$v" "$RABBITMQ_ADMIN_USER" '.*' '.*' '.*'
@@ -53,6 +55,11 @@ ctl set_permissions -p storefront operations_bridge \
 ctl set_permissions -p operations operations_bridge \
   '^operations\.events$' '^operations\.events$' '^$'
 
+# command publisher: cannot declare anything and cannot read. Resource write alone would
+# allow any routing key, so the routing key is pinned with a topic permission as well
+ctl set_permissions -p storefront operations_commands '^$' '^commands$' '^$'
+ctl set_topic_permissions -p storefront operations_commands commands '^orders\.transition\.requested$' '^$'
+
 # revoke any stale rights in vhosts each user must not touch (isolation is enforced,
 # not just granted - a leftover grant from an earlier layout would breach it)
 revoke / storefront_app
@@ -60,5 +67,7 @@ revoke operations storefront_app
 revoke / operations_consumer
 revoke storefront operations_consumer
 revoke / operations_bridge
+revoke / operations_commands
+revoke operations operations_commands
 
 echo "rabbitmq provisioning complete"

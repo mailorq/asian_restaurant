@@ -45,6 +45,9 @@ RABBITMQ_URL = env("OPERATIONS_RABBITMQ_URL", default="amqp://guest:guest@rabbit
 BRIDGE_CONSUME_URL = env("OPERATIONS_BRIDGE_CONSUME_URL", default=RABBITMQ_URL)
 BRIDGE_PUBLISH_URL = env("OPERATIONS_BRIDGE_PUBLISH_URL", default=RABBITMQ_URL)
 
+# command publisher connects with its own write-only credential, never the consumer one
+COMMANDS_RABBITMQ_URL = env("OPERATIONS_COMMANDS_RABBITMQ_URL", default="")
+
 IDENTITY_JWKS_URL = env("IDENTITY_JWKS_URL", default="")
 
 # consumer exposes its own metrics; the API process cannot see the consumer's counters
