@@ -170,7 +170,7 @@ def test_rejected_outcome_also_settles_the_row():
 def test_published_row_is_left_alone_by_the_outcome():
     command = _command()
     _, row = _claim(command)
-    commands.mark_published(row)
+    commands.confirm_dispatch(row)
 
     _outcome(command, _succeeded(command))
 
@@ -201,13 +201,13 @@ def test_second_worker_takes_over_after_the_lease_expires():
     assert second.publish_attempted_at == first.publish_attempted_at  # stamped once
 
 
-def test_superseded_worker_cannot_mark_published():
+def test_superseded_worker_cannot_confirm_the_dispatch():
     command = _command()
     _, stale = _claim(command, worker="w1")
     _release_lease(command)
     _claim(command, worker="w2")
 
-    assert commands.mark_published(stale) is False
+    assert commands.confirm_dispatch(stale) is False
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
@@ -221,12 +221,12 @@ def test_superseded_worker_cannot_schedule_retry():
     assert _outbox(command).lease_token == fresh.lease_token
 
 
-def test_unclaimed_row_cannot_be_marked_published():
+def test_unclaimed_row_cannot_be_confirmed():
     command = _command()
 
     # a NULL token is not a lease; without this the IS NULL match would publish an event that
     # was never handed to the broker
-    assert commands.mark_published(_outbox(command)) is False
+    assert commands.confirm_dispatch(_outbox(command)) is False
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
@@ -246,7 +246,7 @@ def test_a_row_without_a_token_is_never_completed():
     )
 
     row = _outbox(command)
-    assert commands.mark_published(row) is False
+    assert commands.confirm_dispatch(row) is False
     assert commands.schedule_retry(row, backoff=timedelta(seconds=30)) is False
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
@@ -256,19 +256,44 @@ def test_expired_lease_cannot_be_completed():
     _, row = _claim(command)
     _release_lease(command)
 
-    assert commands.mark_published(row) is False
+    assert commands.confirm_dispatch(row) is False
     assert commands.schedule_retry(row, backoff=timedelta(seconds=30)) is False
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
-def test_lease_holder_completes_and_releases_the_row():
+# --- confirm ---------------------------------------------------------------
+def test_confirm_writes_the_row_and_the_command_together():
     command = _command()
     _, row = _claim(command)
 
-    assert commands.mark_published(row) is True
+    assert commands.confirm_dispatch(row) is True
+
     stored = _outbox(command)
-    assert stored.status == OperationsOutbox.Status.PUBLISHED
-    assert stored.lease_token is None and stored.locked_by == ""
+    assert stored.status == OperationsOutbox.Status.PUBLISHED and stored.published_at is not None
+    assert stored.attempts == 1
+    assert stored.lease_token is None and stored.locked_until is None and stored.locked_by == ""
+    # the crash gap: a published row beside a pending command has no way forward
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.DISPATCHED
+
+
+def test_confirm_advances_a_command_that_had_failed_to_dispatch():
+    command = _command()
+    commands.mark_dispatch_failed(command)
+    _, row = _claim(command)
+
+    assert commands.confirm_dispatch(row) is True
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.DISPATCHED
+
+
+def test_refused_confirm_leaves_both_records_untouched():
+    command = _command()
+    _, stale = _claim(command, worker="w1")
+    _release_lease(command)
+    _claim(command, worker="w2")
+
+    assert commands.confirm_dispatch(stale) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
 
 
 def test_retry_releases_the_lease_and_defers_the_row():
@@ -309,6 +334,24 @@ def test_claim_allows_an_expired_row_that_was_already_attempted():
 
     # already on the wire: keep publishing so the storefront can resolve it with an outcome
     assert _claim(command, worker="w2")[0] is ClaimResult.CLAIMED
+
+
+def test_deadline_passing_while_the_command_lock_is_held_is_not_claimed(monkeypatch):
+    command = _command()
+    real = timezone.now
+    reads = {"n": 0}
+
+    def creeping():
+        # the row is eligible when it is selected; the deadline lapses while the command lock
+        # is being awaited, so only a clock read taken after the locks sees it
+        reads["n"] += 1
+        return real() if reads["n"] == 1 else real() + timedelta(seconds=31)
+
+    monkeypatch.setattr(commands.timezone, "now", creeping)
+    result, row = commands.claim_or_expire(_outbox(command).pk, worker="w1", lease=LEASE)
+
+    assert result is ClaimResult.EXPIRED and row is None
+    assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
 
 
 def test_claim_refuses_a_terminal_command():

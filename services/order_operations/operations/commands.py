@@ -29,6 +29,11 @@ REQUESTED_ROUTING_KEY = "orders.transition.requested"
 ACTOR_ROLE = "restaurant_employee"
 PRODUCER = "operations"
 COMMAND_TTL = timedelta(seconds=30)
+# a confirm advances only these; timed_out is not re-dispatched, its deadline has already
+# elapsed and it stays a reconciliation signal until an outcome arrives
+DISPATCHABLE = frozenset(
+    {OperationCommand.Status.PENDING, OperationCommand.Status.DISPATCH_FAILED}
+)
 IDEMPOTENCY_KEY_MAX = 200
 
 
@@ -221,9 +226,9 @@ def _suppress_expired(row: OperationsOutbox, command: OperationCommand) -> None:
 def claim_or_expire(row_id: int, *, worker: str, lease: timedelta):
     """leases one row for publishing, or finalises it when it expired before ever being sent
 
-    Locks outbox before command, the same order expire_before_dispatch uses. The attempt stamp
+    locks outbox before command, the same order expire_before_dispatch uses. the attempt stamp
     and the fencing token are written here, so a row handed to the network cannot be suppressed
-    and a superseded worker cannot complete it later.
+    and a superseded worker cannot complete it later
     """
     now = timezone.now()
     with transaction.atomic():
@@ -243,19 +248,24 @@ def claim_or_expire(row_id: int, *, worker: str, lease: timedelta):
         command = None
         if row.command_id is not None:
             command = OperationCommand.objects.select_for_update().get(pk=row.command_id)
+
+        # the command lock can block for as long as another writer holds it; a deadline that
+        # passed during that wait must not be judged by the clock read before the locks
+        decision = timezone.now()
+        if command is not None:
             if command.status in OperationCommand.TERMINAL:
                 return ClaimResult.UNAVAILABLE, None
-            if _deadline_passed(command, now) and row.publish_attempted_at is None:
+            if _deadline_passed(command, decision) and row.publish_attempted_at is None:
                 if command.status == OperationCommand.Status.PENDING:
                     _suppress_expired(row, command)
                     return ClaimResult.EXPIRED, None
                 return ClaimResult.UNAVAILABLE, None
 
         if row.publish_attempted_at is None:
-            row.publish_attempted_at = now
+            row.publish_attempted_at = decision
         row.lease_token = uuid.uuid4()
         row.locked_by = worker
-        row.locked_until = now + lease
+        row.locked_until = decision + lease
         row.save(update_fields=["publish_attempted_at", "lease_token", "locked_by", "locked_until"])
         return ClaimResult.CLAIMED, row
 
@@ -275,17 +285,37 @@ def _held(row: OperationsOutbox) -> dict | None:
     )
 
 
-def mark_published(row: OperationsOutbox) -> bool:
-    """completes the attempt only if this worker still holds the lease it was given"""
+def confirm_dispatch(row: OperationsOutbox) -> bool:
+    """
+    records one publisher confirm on the outbox row and its command together
+
+    the confirm is a single fact about two records, so it is written in one transaction. split
+    across two, a relay that dies in the middle leaves a published row with a pending command:
+    the row is never handed out again and the command has no way forward, so the sweeper would
+    later call it timed_out even though the broker had confirmed it
+
+    only the command advances conditionally. the confirm itself is not in doubt, so the row is
+    published regardless, while a command already past its deadline stays timed_out and waits
+    for an outcome
+    """
     held = _held(row)
     if held is None:
         return False
-    return bool(
-        OperationsOutbox.objects.filter(**held).update(
+    with transaction.atomic():
+        locked = OperationsOutbox.objects.select_for_update().filter(**held).first()
+        if locked is None:
+            return False
+        command = None
+        if locked.command_id is not None:
+            command = OperationCommand.objects.select_for_update().get(pk=locked.command_id)
+        OperationsOutbox.objects.filter(pk=locked.pk).update(
             status=OperationsOutbox.Status.PUBLISHED, published_at=timezone.now(),
             attempts=F("attempts") + 1, locked_until=None, locked_by="", lease_token=None,
         )
-    )
+        if command is not None and command.status in DISPATCHABLE:
+            command.status = OperationCommand.Status.DISPATCHED
+            command.save(update_fields=["status", "updated_at"])
+        return True
 
 
 def schedule_retry(row: OperationsOutbox, *, backoff: timedelta, error: str = "") -> bool:
@@ -332,23 +362,13 @@ def _advance(command: OperationCommand, to_status, *, allowed) -> OperationComma
         return locked
 
 
-def mark_dispatched(command: OperationCommand) -> OperationCommand:
-    # a fresh publish, or a successful re-publish after dispatch_failed, confirmed to the broker.
-    # timed_out is NOT re-dispatched: its deadline has already elapsed, so it stays a
-    # reconciliation signal until an outcome arrives.
-    return _advance(
-        command, OperationCommand.Status.DISPATCHED,
-        allowed={OperationCommand.Status.PENDING, OperationCommand.Status.DISPATCH_FAILED},
-    )
-
-
 def mark_timed_out(command: OperationCommand) -> OperationCommand:
     """
     deadline elapsed with delivery unresolved; NOT terminal, a late outcome may finalise it
 
     unresolved means two things at once: the deadline is behind us and the request actually
     reached the network. Marking a never-sent command timed_out would strand it forever, since
-    the claim refuses an expired row and expiry only acts on a pending command.
+    the claim refuses an expired row and expiry only acts on a pending command
     """
     with transaction.atomic():
         row = OperationsOutbox.objects.select_for_update().filter(command_id=command.pk).first()

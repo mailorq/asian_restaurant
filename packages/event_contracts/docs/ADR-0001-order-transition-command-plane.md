@@ -94,6 +94,18 @@ pending         -> rejected           expired BEFORE dispatch (never published; 
 **Terminal = `{succeeded, rejected}`.** `command_expired` and `actor_not_authorized` are reject
 codes inside `rejected`, not extra states.
 
+The command outbox row carries its own end states, and only `published` means a publisher confirm:
+```
+published    the broker confirmed the request
+suppressed   expired before any publish attempt, decided locally
+settled      an outcome proved delivery while the confirm was lost
+```
+`settled` exists because an outcome is stronger evidence than a confirm: it can only have been
+produced by a storefront that received the request. Without it a row whose confirm never arrived
+would stay `pending` forever behind a terminal command - no claim ever takes a row whose command
+is finished, so it would hold the head of the backlog and keep the oldest-pending alert firing.
+It is not folded into `published`, which has to keep meaning "the broker confirmed this".
+
 Expiry is **executable**, not just a UI label:
 - the relay finalizes an expired command locally as `rejected/command_expired` **only while it is
   still `pending` and provably never reached the network**. `OperationsOutbox.publish_attempted_at`
@@ -112,6 +124,16 @@ Expiry is **executable**, not just a UI label:
 - an expired command that was already attempted keeps being published: the storefront rejects it
   with `command_expired` and that outcome finalizes it, which resolves the unknown state instead
   of leaving it open;
+- a publisher confirm is one fact about two records and is written in one transaction: the row
+  becomes `published` and the command advances `{pending, dispatch_failed} -> dispatched`
+  together. Written separately, a relay that dies between them leaves a published row beside a
+  pending command, which nothing can advance and the sweeper would later call `timed_out` despite
+  a confirmed delivery. The row is published unconditionally because the confirm is not in doubt;
+  only the command transition is conditional, so a command already past its deadline stays
+  `timed_out` and waits for an outcome;
+- the claim decides on a clock read taken **after** both locks are held. The command lock can
+  block for as long as another writer holds it, and a deadline that lapses during that wait must
+  not be judged by the earlier read;
 - once **dispatched**, expiry may only produce the non-terminal `timed_out`: absence of an outcome
   is not proof of non-delivery. A late message is rejected by the consumer with `command_expired`,
   and that outcome finalizes the command;
@@ -132,7 +154,8 @@ Event IDs are **stable and stored**, never minted at publish time:
 ## Outbox metadata is first-class on both sides
 Envelopes are assembled from typed columns, never re-derived from an unvalidated JSON payload.
 - `OperationsOutbox`: `command` (nullable OneToOne), `producer`, `aggregate_id`,
-  `aggregate_version`, `causation_id` (alongside the existing `event_id`, `correlation_id`).
+  `aggregate_version`, `causation_id` (alongside the existing `event_id`, `correlation_id`),
+  plus the attempt columns `publish_attempted_at` and `lease_token`.
 - `OrderOutbox`: `causation_id`.
 - `CommandInbox`: `command_id` (unique), `request_event_id`, `correlation_id`, `outcome_event_id`,
   `outcome_type`, `outcome_data`.

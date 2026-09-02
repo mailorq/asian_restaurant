@@ -21,6 +21,13 @@ def _create(actor_id=42, order_id=1, expected="created", target="confirmed", key
     )
 
 
+def _dispatch(command):
+    """claim and confirm; a command only reaches dispatched through a publisher confirm"""
+    row = OperationsOutbox.objects.get(command=command)
+    _, claimed = commands.claim_or_expire(row.pk, worker="w1", lease=timedelta(seconds=60))
+    commands.confirm_dispatch(claimed)
+
+
 def _unresolved(command):
     """delivery is unresolved only once the request reached the network and its time ran out"""
     row = OperationsOutbox.objects.get(command=command)
@@ -99,14 +106,14 @@ def test_timed_out_then_late_success_finalizes_succeeded():
 
 def test_dispatched_then_success():
     command, _ = _create()
-    commands.mark_dispatched(command)
+    _dispatch(command)
     result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.SUCCEEDED
 
 
 def test_rejected_outcome_records_code_and_detail():
     command, _ = _create()
-    commands.mark_dispatched(command)
+    _dispatch(command)
     result = commands.apply_transition_outcome(_rejected(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
     assert result.status == OperationCommand.Status.REJECTED
     assert result.result_code == "stale_status" and result.result_detail == "x"
@@ -144,13 +151,13 @@ def test_idempotency_key_too_long_rejected():
 def test_dispatch_failed_then_redispatch():
     command, _ = _create()
     commands.mark_dispatch_failed(command)
-    result = commands.mark_dispatched(command)  # successful re-publish after retry
-    assert result.status == OperationCommand.Status.DISPATCHED
+    _dispatch(command)  # successful re-publish after retry
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.DISPATCHED
 
 
 def test_timeout_before_the_deadline_leaves_the_command_dispatched():
     command, _ = _create()
-    commands.mark_dispatched(command)
+    _dispatch(command)
 
     # the deadline still holds, so delivery is not yet unresolved
     assert commands.mark_timed_out(command).status == OperationCommand.Status.DISPATCHED
@@ -160,8 +167,13 @@ def test_timed_out_is_not_redispatched():
     command, _ = _create()
     _unresolved(command)
     commands.mark_timed_out(command)
-    result = commands.mark_dispatched(command)
-    assert result.status == OperationCommand.Status.TIMED_OUT  # deadline elapsed; stays a signal
+
+    _dispatch(command)  # a later confirm for the same request
+
+    stored = OperationCommand.objects.get(pk=command.pk)
+    assert stored.status == OperationCommand.Status.TIMED_OUT  # deadline elapsed; stays a signal
+    # the confirm is still a fact, so the row is finished and never handed out again
+    assert OperationsOutbox.objects.get(command=command).status == OperationsOutbox.Status.PUBLISHED
 
 
 def test_succeeded_outcome_wrong_from_status_raises():
