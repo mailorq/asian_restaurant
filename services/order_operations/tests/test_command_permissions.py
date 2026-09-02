@@ -3,6 +3,8 @@ least-privilege checks for the command publisher credential
 
 skipped unless COMMANDS_MQ_URL_FOR_PERMISSIONS points at a provisioned broker, because these
 assert broker-side authorisation rather than application behaviour
+
+destructive: purges commands.orders, so point it only at a throwaway broker
 """
 
 import os
@@ -14,7 +16,7 @@ from pika.exceptions import ChannelClosedByBroker
 URL = os.environ.get("COMMANDS_MQ_URL_FOR_PERMISSIONS")
 ADMIN_URL = os.environ.get("ADMIN_MQ_URL_FOR_PERMISSIONS")
 
-# сш sets REQUIRE_COMMAND_PERMISSION_TESTS so a missing broker fails the job instead of
+# ci sets REQUIRE_COMMAND_PERMISSION_TESTS so a missing broker fails the job instead of
 # silently skipping the checks that guard the publisher credential
 if os.environ.get("REQUIRE_COMMAND_PERMISSION_TESTS") == "1" and not (URL and ADMIN_URL):
     raise RuntimeError(

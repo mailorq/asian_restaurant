@@ -295,11 +295,24 @@ def mark_dispatched(command: OperationCommand) -> OperationCommand:
 
 
 def mark_timed_out(command: OperationCommand) -> OperationCommand:
-    # deadline elapsed with no outcome; NOT terminal - a late outcome may still finalise it
-    return _advance(
-        command, OperationCommand.Status.TIMED_OUT,
-        allowed={OperationCommand.Status.PENDING, OperationCommand.Status.DISPATCHED},
-    )
+    """
+    deadline elapsed with delivery unresolved; NOT terminal, a late outcome may finalise it
+
+    a pending command counts as unresolved only once it actually reached the network. Marking a
+    never-sent one timed_out would strand it forever: the claim refuses an expired row and
+    expiry only acts on a pending command, so nothing would ever touch it again.
+    """
+    with transaction.atomic():
+        row = OperationsOutbox.objects.select_for_update().filter(command_id=command.pk).first()
+        locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        if locked.status == OperationCommand.Status.PENDING:
+            if row is None or row.publish_attempted_at is None:
+                return locked
+        elif locked.status != OperationCommand.Status.DISPATCHED:
+            return locked
+        locked.status = OperationCommand.Status.TIMED_OUT
+        locked.save(update_fields=["status", "updated_at"])
+        return locked
 
 
 def mark_dispatch_failed(command: OperationCommand) -> OperationCommand:

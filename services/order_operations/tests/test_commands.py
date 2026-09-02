@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 
 import pytest
 from event_contracts import OrderTransitionRejectedData, OrderTransitionSucceededData
@@ -17,6 +18,13 @@ def _create(actor_id=42, order_id=1, expected="created", target="confirmed", key
         actor_id=actor_id, actor_authz_version=authz_version, order_id=order_id,
         expected_status=expected, target_status=target, idempotency_key=key, reason=reason,
     )
+
+
+def _attempt(command):
+    """a command can only be timed_out or re-dispatched once it reached the network"""
+    row = OperationsOutbox.objects.get(command=command)
+    commands.claim_or_expire(row.pk, worker="w1", lease=timedelta(seconds=60))
+    OperationsOutbox.objects.filter(pk=row.pk).update(locked_until=None)
 
 
 def _succeeded(command, from_status="created", status="confirmed"):
@@ -78,6 +86,7 @@ def test_equal_expected_and_target_rejected():
 
 def test_timed_out_then_late_success_finalizes_succeeded():
     command, _ = _create()
+    _attempt(command)
     commands.mark_timed_out(command)
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.TIMED_OUT
     result = commands.apply_transition_outcome(_succeeded(command), correlation_id=command.correlation_id, causation_id=command.request_event_id)
@@ -137,6 +146,7 @@ def test_dispatch_failed_then_redispatch():
 
 def test_timed_out_is_not_redispatched():
     command, _ = _create()
+    _attempt(command)
     commands.mark_timed_out(command)
     result = commands.mark_dispatched(command)
     assert result.status == OperationCommand.Status.TIMED_OUT  # deadline elapsed; stays a signal

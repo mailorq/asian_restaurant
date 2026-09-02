@@ -5,6 +5,10 @@ on:
     branches: [main, dev]
   pull_request:
 
+# no job needs more than reading the checkout
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest

@@ -64,6 +64,7 @@ def test_expiry_after_a_publish_attempt_leaves_the_command_open():
 
 def test_timed_out_is_never_downgraded_to_rejected():
     command = _command()
+    _claim(command)  # only an attempted command can be timed_out
     commands.mark_timed_out(command)
 
     result = commands.expire_before_dispatch(command)
@@ -190,3 +191,16 @@ def test_claim_refuses_a_terminal_command():
     command.save(update_fields=["status"])
 
     assert _claim(command)[0] is ClaimResult.UNAVAILABLE
+
+
+def test_never_attempted_command_cannot_get_stuck_in_timed_out():
+    command = _command()
+    _expire_deadline(command)
+
+    # a sweeper that marks a never-sent command timed_out would strand it: claim refuses an
+    # expired row and expiry refuses anything that is no longer pending
+    commands.mark_timed_out(command)
+
+    assert _claim(command)[0] is ClaimResult.EXPIRED
+    assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.REJECTED
