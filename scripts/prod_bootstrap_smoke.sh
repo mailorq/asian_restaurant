@@ -23,7 +23,9 @@ trap cleanup EXIT
 
 echo "== boot bare broker (no dev definitions) =="
 dc up -d rabbitmq >/dev/null
-for _ in $(seq 1 30); do dc exec -T rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1 && break; sleep 2; done
+# -u rabbitmq: exec defaults to root and HOME is the data dir, so a cli that runs before the
+# server wrote .erlang.cookie creates it root-owned, and the server dies reading its own cookie
+for _ in $(seq 1 30); do dc exec -T -u rabbitmq rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1 && break; sleep 2; done
 
 echo "== run rabbitmq-provision one-shot =="
 dc run --rm rabbitmq-provision

@@ -31,7 +31,8 @@ wait_for() {  # wait_for <label> <cmd...>
 
 echo "== build + bring up isolated stack (project $PROJ) =="
 dc up -d --build db redis rabbitmq operations-db operations-api operations-consumer operations-bridge backend >/dev/null
-wait_for rabbitmq dc exec -T rabbitmq rabbitmq-diagnostics -q ping
+# probing as root would create a root-owned .erlang.cookie in the data dir and kill the booting server, which runs as rabbitmq
+wait_for rabbitmq dc exec -T -u rabbitmq rabbitmq rabbitmq-diagnostics -q ping
 wait_for backend-migrated be python manage.py migrate --check
 wait_for operations-migrated ops python manage.py migrate --check
 
