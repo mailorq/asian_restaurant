@@ -80,15 +80,66 @@ jobs:
       - run: pip install pika pytest
       - name: start a clean broker with the dev definitions
         run: |
-          docker run -d --name rabbit             -p 5672:5672             -v "$PWD/ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro"             -v "$PWD/ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro"             -v "$PWD/ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro"             rabbitmq:3.13-management-alpine
-          for i in $(seq 1 60); do
-            docker exec rabbit rabbitmq-diagnostics -q ping >/dev/null 2>&1 && break
-            sleep 3
+          set -eu
+          # a missing source is silently turned into an auto-created directory by the bind
+          # mount, which boots the broker into a crash loop with no obvious cause
+          for f in enabled_plugins rabbitmq.conf definitions.dev.json; do
+            test -f "ops/rabbitmq/$f" || { echo "::error::missing ops/rabbitmq/$f"; exit 1; }
           done
-          docker exec rabbit rabbitmq-diagnostics -q check_running
+          start_broker() {
+            # -v drops the anonymous data volume the image declares: recreating the
+            # container while the old volume is still being reclaimed hands the new node
+            # a data dir it cannot write, and the node then dies on its own cookie
+            docker rm -fv rabbit >/dev/null 2>&1 || true
+            docker run -d --name rabbit \
+              -p 5672:5672 \
+              -v "$PWD/ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro" \
+              -v "$PWD/ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro" \
+              -v "$PWD/ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro" \
+              rabbitmq:3.13-management-alpine
+            for _ in $(seq 1 60); do
+              # a dead container has to be reported at once: waiting out the whole timeout
+              # only to fail on "is not running" throws the reason away
+              if [ "$(docker inspect -f '{{.State.Running}}' rabbit)" != "true" ]; then
+                echo "the broker exited during startup"
+                return 1
+              fi
+              # check_running, not ping: ping answers as soon as the erlang node is up, which
+              # lets the next step race the definitions import
+              if docker exec rabbit rabbitmq-diagnostics -q check_running >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 3
+            done
+            echo "the broker never finished starting"
+            return 1
+          }
+          # one retry, with the log of every failed attempt: a flaky boot must not fail the
+          # security gate, a broken one still has to
+          for attempt in 1 2; do
+            if start_broker; then exit 0; fi
+            echo "::warning::broker startup attempt $attempt failed"
+            docker logs rabbit || true
+            sleep 5
+          done
+          echo "::error::the broker could not be started"
+          exit 1
+
+      - name: broker diagnostics
+        if: failure()
+        run: |
+          docker inspect -f 'state={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' rabbit || true
+          docker logs rabbit || true
+
       - name: converge permissions with the production provisioning script
         run: |
-          docker exec -i             -e RABBITMQ_ADMIN_USER=asian -e RABBITMQ_ADMIN_PASSWORD=change-me-rabbit             -e STOREFRONT_MQ_PASSWORD=change-me-rabbit -e OPERATIONS_MQ_PASSWORD=change-me-ops-mq             -e BRIDGE_MQ_PASSWORD=change-me-bridge-mq             -e OPERATIONS_COMMANDS_MQ_PASSWORD=change-me-commands-mq             rabbit bash -s < ops/rabbitmq/provision.sh
+          docker exec -i \
+            -e RABBITMQ_ADMIN_USER=asian -e RABBITMQ_ADMIN_PASSWORD=change-me-rabbit \
+            -e STOREFRONT_MQ_PASSWORD=change-me-rabbit \
+            -e OPERATIONS_MQ_PASSWORD=change-me-ops-mq \
+            -e BRIDGE_MQ_PASSWORD=change-me-bridge-mq \
+            -e OPERATIONS_COMMANDS_MQ_PASSWORD=change-me-commands-mq \
+            rabbit bash -s < ops/rabbitmq/provision.sh
       - name: declare the command topology as its owner
         run: |
           PYTHONPATH=backend python -c "
