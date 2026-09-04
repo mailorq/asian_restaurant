@@ -60,7 +60,7 @@ def _release_lease(command):
     )
 
 
-# --- expiry ---------------------------------------------------------------
+# expiry
 def test_expiry_without_any_publish_attempt_suppresses_the_row():
     command = _command()
     _expire_deadline(command)
@@ -145,7 +145,7 @@ def test_timeout_refuses_a_command_whose_deadline_has_not_passed():
     assert commands.mark_timed_out(command).status == OperationCommand.Status.PENDING
 
 
-# --- outcome closes the attempt ------------------------------------------
+# outcome closes the attempt
 def test_outcome_settles_a_row_whose_publisher_confirm_was_lost():
     command = _command()
     _, row = _claim(command)  # attempt stamped, then the relay dies before the confirm
@@ -177,7 +177,7 @@ def test_published_row_is_left_alone_by_the_outcome():
     assert _outbox(command).status == OperationsOutbox.Status.PUBLISHED
 
 
-# --- lease ----------------------------------------------------------------
+# lease
 def test_second_worker_is_refused_while_the_lease_holds():
     command = _command()
     assert _claim(command, worker="w1")[0] is ClaimResult.CLAIMED
@@ -261,7 +261,7 @@ def test_expired_lease_cannot_be_completed():
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
 
 
-# --- confirm ---------------------------------------------------------------
+# confirm
 def test_confirm_writes_the_row_and_the_command_together():
     command = _command()
     _, row = _claim(command)
@@ -306,7 +306,69 @@ def test_retry_releases_the_lease_and_defers_the_row():
     assert _claim(command, worker="w2")[0] is ClaimResult.BUSY  # still inside the backoff window
 
 
-# --- claim decisions ------------------------------------------------------
+# sweeper
+def test_sweep_times_out_a_dispatched_command_whose_outcome_never_came():
+    command = _command()
+    _, row = _claim(command)
+    commands.confirm_dispatch(row)
+    _expire_deadline(command)
+
+    assert commands.sweep_expired() == {"expired": 0, "timed_out": 1}
+
+    # without this the command would stay dispatched forever: the row is published, so no claim
+    # ever touches it again and no outcome is coming
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.TIMED_OUT
+
+
+def test_sweep_finalises_a_command_that_never_reached_the_network():
+    command = _command()
+    _expire_deadline(command)
+
+    assert commands.sweep_expired() == {"expired": 1, "timed_out": 0}
+
+    stored = OperationCommand.objects.get(pk=command.pk)
+    assert stored.status == OperationCommand.Status.REJECTED
+    assert stored.result_code == "command_expired"
+    assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
+
+
+def test_sweep_times_out_an_attempted_command_still_pending():
+    command = _command()
+    _claim(command)
+    _expire_deadline(command)
+
+    assert commands.sweep_expired() == {"expired": 0, "timed_out": 1}
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.TIMED_OUT
+
+
+def test_sweep_leaves_a_command_inside_its_deadline_alone():
+    command = _command()
+    _claim(command)
+
+    assert commands.sweep_expired() == {"expired": 0, "timed_out": 0}
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.PENDING
+
+
+def test_sweep_does_not_touch_a_terminal_command():
+    command = _command()
+    _claim(command)
+    _outcome(command, _succeeded(command))
+    _expire_deadline(command)
+
+    assert commands.sweep_expired() == {"expired": 0, "timed_out": 0}
+    assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.SUCCEEDED
+
+
+def test_sweep_is_idempotent_across_runs():
+    command = _command()
+    _claim(command)
+    _expire_deadline(command)
+    commands.sweep_expired()
+
+    assert commands.sweep_expired() == {"expired": 0, "timed_out": 0}
+
+
+# claim decisions
 def test_suppressed_row_is_never_claimed_again():
     command = _command()
     _expire_deadline(command)

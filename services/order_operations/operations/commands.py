@@ -353,6 +353,37 @@ def expire_before_dispatch(command: OperationCommand) -> OperationCommand:
         return locked
 
 
+def sweep_expired(*, limit: int = 200) -> dict[str, int]:
+    """
+    acts on every command whose deadline has passed
+
+    nothing else revisits a command once the relay has let go of its outbox row, so without this
+    a lost outcome leaves the command open forever and timed_out is unreachable in production
+    """
+    now = timezone.now()
+    pks = list(
+        OperationCommand.objects.filter(
+            status__in=[OperationCommand.Status.PENDING, OperationCommand.Status.DISPATCHED],
+            deadline_at__lte=now,
+        )
+        .order_by("deadline_at")
+        .values_list("pk", flat=True)[:limit]
+    )
+    swept = {"expired": 0, "timed_out": 0}
+    for pk in pks:
+        command = OperationCommand.objects.filter(pk=pk).first()
+        if command is None:
+            continue
+        if command.status == OperationCommand.Status.PENDING:
+            # only finalises one that provably never reached the network
+            if expire_before_dispatch(command).status == OperationCommand.Status.REJECTED:
+                swept["expired"] += 1
+                continue
+        if mark_timed_out(command).status == OperationCommand.Status.TIMED_OUT:
+            swept["timed_out"] += 1
+    return swept
+
+
 def _advance(command: OperationCommand, to_status, *, allowed) -> OperationCommand:
     with transaction.atomic():
         locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
