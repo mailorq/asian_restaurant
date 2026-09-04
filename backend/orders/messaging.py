@@ -18,6 +18,7 @@ from django.conf import settings
 EXCHANGE = "orders"
 DLX = "orders.dlx"
 OPS_QUEUE = "orders.ops"
+LEGACY_PROJECTION_KEYS = ("order.created", "order.status_changed")
 OPS_DLQ = "orders.ops.dlq"
 
 RETRY_EXCHANGE = "orders.retry"
@@ -50,7 +51,10 @@ def declare_topology(channel: "pika.channel.Channel") -> None:
 
     # main ops queue; poison messages nacked here dead-letter straight to the DLQ
     channel.queue_declare(queue=OPS_QUEUE, durable=True, arguments={"x-dead-letter-exchange": DLX})
-    channel.queue_bind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key="order.*")
+    
+    for key in LEGACY_PROJECTION_KEYS:
+        channel.queue_bind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key=key)
+    channel.queue_unbind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key="order.*")
 
 
 def publish(routing_key: str, event_type: str, payload: dict, headers: dict) -> None:
