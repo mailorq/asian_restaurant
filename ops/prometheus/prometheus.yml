@@ -18,6 +18,16 @@ scrape_configs:
     static_configs:
       - targets: ["operations-consumer:9101"]
 
+  - job_name: commands-consumer
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["commands-consumer:9102"]
+
+  - job_name: commands-relay
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["commands-relay:9103"]
+
   - job_name: rabbitmq
     # per-object endpoint exposes rabbitmq_queue_messages per queue (DLQ/retry depth)
     metrics_path: /metrics/per-object

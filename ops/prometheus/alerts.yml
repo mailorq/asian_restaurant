@@ -19,12 +19,29 @@ groups:
 
       - alert: CommandDLQNotEmpty
         # the command queues live on the storefront vhost and do not match operations.*
-        expr: rabbitmq_queue_messages{queue=~"commands\..*dlq"} > 0
+        expr: rabbitmq_queue_messages{queue=~"commands[.].*dlq"} > 0
         for: 1m
         labels: {severity: critical}
         annotations:
           summary: "poison commands in {{ $labels.queue }}"
           description: "{{ $value }} message(s) in {{ $labels.queue }}, order transitions are not being applied."
+
+      - alert: CommandConsumerDown
+        expr: commands_consumer_connected == 0 or absent(commands_consumer_connected)
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "command consumer not consuming"
+          description: "no process is applying transition commands, so every command will time out."
+
+      - alert: CommandOutboxBacklogStale
+        # a command outlives its own deadline in 30s, so a backlog older than that is already producing timed_out commands rather than applied ones
+        expr: operations_command_outbox_oldest_pending_age_seconds > 60
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "commands are not leaving the operations outbox"
+          description: "oldest pending command is {{ $value }}s old; the relay or the storefront topology is down."
 
       - alert: OperationsRetryQueueGrowing
         expr: rabbitmq_queue_messages{queue=~"operations.*retry"} > 20
