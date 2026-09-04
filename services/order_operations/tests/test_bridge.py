@@ -236,6 +236,17 @@ def test_publish_failure_is_retried():
     ch.basic_nack.assert_not_called()
 
 
+def test_failed_publish_discards_the_connection():
+    cmd = _cmd(publish_side_effect=Exception("broker down"))
+    ch = MagicMock()
+    props, method, body = _legacy()
+
+    cmd._on_message(ch, method, props, body)
+
+    # a dead publish connection is never serviced by the consume loop, so reusing it would dead-letter every later event until someone restarts the container
+    assert cmd.publish_channel is None and cmd._publish_conn is None
+
+
 def test_exhausted_retries_go_to_dlq():
     cmd = _cmd(publish_side_effect=Exception("still down"))
     ch = MagicMock()

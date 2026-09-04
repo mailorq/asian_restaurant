@@ -195,14 +195,16 @@ def build_envelope(properties, event_type: str, legacy: dict) -> dict:
 class Command(BaseCommand):
     help = "Bridge legacy storefront order events to versioned operations.events (temporary adapter)."
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._publish_conn = None
+        self.publish_channel = None
+
     def handle(self, *args, **options) -> None:
         consume_conn = pika.BlockingConnection(pika.URLParameters(settings.BRIDGE_CONSUME_URL))
-        publish_conn = pika.BlockingConnection(pika.URLParameters(settings.BRIDGE_PUBLISH_URL))
         channel = consume_conn.channel()
-        self.publish_channel = publish_conn.channel()
         declare_bridge_topology(channel)
-        self.publish_channel.exchange_declare(exchange=messaging.EXCHANGE, exchange_type="topic", durable=True)
-        self.publish_channel.confirm_delivery()
+        self._open_publish()
         channel.basic_qos(prefetch_count=20)
         channel.basic_consume(queue=BRIDGE_QUEUE, on_message_callback=self._on_message)
         self.stdout.write(self.style.SUCCESS(f"storefront bridge: {BRIDGE_QUEUE} -> {messaging.EXCHANGE}"))
@@ -212,7 +214,37 @@ class Command(BaseCommand):
             channel.stop_consuming()
         finally:
             consume_conn.close()
-            publish_conn.close()
+            self._drop_publish()
+
+    def _open_publish(self):
+        """
+        publish side of the bridge, rebuilt on demand
+
+        it only ever publishes, so nothing services its heartbeats while events are quiet and the
+        broker eventually drops it. reusing that dead connection would dead-letter every later
+        event, so a failed publish discards it and the next message reconnects
+        """
+        if self.publish_channel is not None and self.publish_channel.is_open:
+            return self.publish_channel
+        if self._publish_conn is None or not self._publish_conn.is_open:
+            self._publish_conn = pika.BlockingConnection(
+                pika.URLParameters(settings.BRIDGE_PUBLISH_URL)
+            )
+        self.publish_channel = self._publish_conn.channel()
+        self.publish_channel.exchange_declare(
+            exchange=messaging.EXCHANGE, exchange_type="topic", durable=True
+        )
+        self.publish_channel.confirm_delivery()
+        return self.publish_channel
+
+    def _drop_publish(self) -> None:
+        self.publish_channel = None
+        if self._publish_conn is not None:
+            try:
+                self._publish_conn.close()
+            except Exception:
+                pass
+        self._publish_conn = None
 
     def _on_message(self, channel, method, properties, body) -> None:
         event_type = LEGACY_TO_VERSIONED.get(properties.type)
@@ -235,10 +267,12 @@ class Command(BaseCommand):
         try:
             # ack the legacy delivery only after the versioned publish is confirmed
             messaging.publish_envelope(
-                self.publish_channel, messaging.EXCHANGE, event_type, envelope,
+                self._open_publish(), messaging.EXCHANGE, event_type, envelope,
                 {"event_id": envelope["event_id"], "x-relayed-by": RELAYED_BY},
             )
         except Exception:
+            log.exception("bridge publish failed", extra={"event_type": event_type})
+            self._drop_publish()
             self._retry(channel, method, properties, body)
             return
         channel.basic_ack(method.delivery_tag)
