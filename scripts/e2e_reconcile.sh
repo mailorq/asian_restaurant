@@ -19,6 +19,8 @@ be() { dc exec -T backend "$@"; }
 ops() { dc exec -T operations-api "$@"; }
 bridge_ready() { dc logs operations-bridge 2>&1 | grep -q 'storefront bridge:'; }
 card_projected() { ops python manage.py shell -c "import sys; from operations.models import OperationOrder; sys.exit(0 if OperationOrder.objects.filter(payment_method='card').exists() else 1)"; }
+order_confirmed() { be python manage.py shell -c "import sys; from orders.models import Order; sys.exit(0 if Order.objects.get(idempotency_key='e2e-key').status == 'confirmed' else 1)"; }
+command_succeeded() { ops python manage.py shell -c "import sys; from operations.models import OperationCommand; sys.exit(0 if OperationCommand.objects.filter(idempotency_key='e2e-transition', status='succeeded').exists() else 1)"; }
 
 cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -74,6 +76,35 @@ for _ in 1 2 3 4 5; do be python manage.py publish_outbox; done
 
 echo "== assert projected payment method is 'card' BEFORE reconciling =="
 wait_for card-projected card_projected
+
+echo "== transition command: operations -> relay -> storefront -> outcome -> operations =="
+# started only now: both run on the backend image and would migrate an empty database alongside it
+dc up -d commands-consumer commands-relay >/dev/null
+
+STAFF=$(be python manage.py shell -c "
+from django.contrib.auth import get_user_model
+from employee import service as employee_service
+from orders.models import Order
+staff = get_user_model().objects.create_user(username='+79995551111', phone='+79995551111',
+                                             password='Pass!2345', customer_version=1)
+staff = employee_service.set_employee_role(actor=staff, target=staff, grant=True)
+order = Order.objects.get(idempotency_key='e2e-key')
+print(staff.id, staff.authz_version, order.id)
+" | tail -1 | tr -d '\r')
+read -r ACTOR_ID AUTHZ_VERSION ORDER_ID <<<"$STAFF"
+
+ops python manage.py shell -c "
+from operations.commands import create_transition_command
+command, _ = create_transition_command(
+    actor_id=$ACTOR_ID, actor_authz_version=$AUTHZ_VERSION, order_id=$ORDER_ID,
+    expected_status='created', target_status='confirmed', idempotency_key='e2e-transition',
+)
+print('command', command.command_id)
+"
+
+wait_for order-confirmed order_confirmed
+for _ in 1 2 3 4 5; do be python manage.py publish_outbox; done
+wait_for command-succeeded command_succeeded
 
 echo "== reconcile the completed run (expect status ok) =="
 ops python manage.py reconcile

@@ -9,3 +9,5 @@ services:
     ports: !override []
   operations-api:
     ports: !override []
+  commands-consumer:
+    env_file: !override [.env.e2e]
