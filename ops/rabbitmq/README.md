@@ -8,6 +8,11 @@ Storefront and operations are isolated by **vhost + user**, with minimal permiss
 | `operations` | `operations_consumer` | `^operations\.` (own namespace only) |
 | `storefront` | `operations_bridge` | `^operations\.bridge\.` / `^operations\.bridge\.` / `^(orders\|operations\.bridge\.)` |
 | `operations` | `operations_bridge` | `^operations\.events$` / `^operations\.events$` / `^$` |
+| `storefront` | `operations_commands` | `^$` / `^commands$` / `^$`, topic `^orders\.transition\.requested$` |
+
+`operations_commands` only publishes transition commands into the storefront vhost: it can
+neither declare nor repair the topology it publishes to, cannot read any queue, and its
+topic permission pins it to the single routing key.
 
 The bridge is the only cross-vhost actor; it reads `orders` on the storefront vhost
 and writes only `operations.events` on the operations vhost.
@@ -32,6 +37,7 @@ docker compose -f compose.yaml -f compose.prod.yaml up -d rabbitmq
 docker compose -f compose.yaml -f compose.prod.yaml exec -T \
   -e RABBITMQ_ADMIN_USER -e RABBITMQ_ADMIN_PASSWORD \
   -e STOREFRONT_MQ_PASSWORD -e OPERATIONS_MQ_PASSWORD -e BRIDGE_MQ_PASSWORD \
+  -e OPERATIONS_COMMANDS_MQ_PASSWORD \
   rabbitmq bash -s < ops/rabbitmq/provision.sh
 ```
 
