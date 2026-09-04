@@ -54,6 +54,55 @@ jobs:
       - run: python manage.py check
       - run: pytest
 
+  # the whole command lifecycle, lease/fencing, expiry and the dispatcher live here; without this
+  # job their tests never run and a regression in operations reaches main green
+  operations:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/order_operations
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ops_user
+          POSTGRES_PASSWORD: ops_pass
+          POSTGRES_DB: operations
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ops_user"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      OPERATIONS_SECRET_KEY: ci-ops-key
+      OPERATIONS_DATABASE_URL: postgres://ops_user:ops_pass@localhost:5432/operations
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "../../packages/event_contracts[dev]"
+      - run: pip install -r requirements.txt
+      - run: pip install ".[dev]"
+      - run: ruff check .
+      - run: python manage.py check
+      - run: python manage.py makemigrations --check --dry-run
+      - run: pytest tests/ -q
+
+  contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/event_contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ".[dev]"
+      - run: pytest -q
+
   security-config:
     # runs from the repo root (no working-directory), so scripts resolve compose files
     # and git paths correctly; ubuntu-latest ships Docker Compose v2 for the config check
