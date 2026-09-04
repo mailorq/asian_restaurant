@@ -14,7 +14,13 @@ WORKER = "relay-test"
 
 
 class FakeChannel:
-    is_open = True
+    def __init__(self) -> None:
+        self.is_open = True
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        self.is_open = False
 
 
 def _command(order_id=1, key="k1"):
@@ -25,11 +31,15 @@ def _command(order_id=1, key="k1"):
     return command
 
 
-def _relay(monkeypatch, publish):
+def _relay(monkeypatch, publish, channel=None):
     relay = publish_commands.Command()
-    relay._connection = None
-    relay._channel = None
-    monkeypatch.setattr(relay, "_open", lambda: FakeChannel())
+    channel = channel or FakeChannel()
+
+    def _open():
+        relay._channel = channel
+        return channel
+
+    monkeypatch.setattr(relay, "_open", _open)
     monkeypatch.setattr(publish_commands.messaging, "publish_envelope", publish)
     return relay
 
@@ -115,6 +125,15 @@ def test_broker_closing_the_channel_drops_it_for_the_next_attempt(monkeypatch):
     relay._drain(WORKER)
 
     assert relay._channel is None
+
+
+def test_unroutable_publish_closes_the_channel_it_abandons(monkeypatch):
+    _command()
+    channel = FakeChannel()
+
+    _relay(monkeypatch, _raising(UnroutableError([])), channel=channel)._drain(WORKER)
+
+    assert channel.closed is True
 
 
 def test_exhausted_attempts_mark_dispatch_failed(monkeypatch):

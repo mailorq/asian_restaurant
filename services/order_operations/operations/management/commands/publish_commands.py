@@ -67,6 +67,11 @@ def _envelope(row: OperationsOutbox) -> dict:
 class Command(BaseCommand):
     help = "Leased relay: publishes pending transition commands to the storefront command exchange."
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._connection = None
+        self._channel = None
+
     def add_arguments(self, parser) -> None:
         parser.add_argument("--loop", action="store_true")
         parser.add_argument("--interval", type=float, default=1.0)
@@ -77,8 +82,6 @@ class Command(BaseCommand):
                 "OPERATIONS_COMMANDS_RABBITMQ_URL is required; without it the relay would fall "
                 "back to the operations vhost and publish commands nobody consumes"
             )
-        self._connection = None
-        self._channel = None
         worker_id = f"{socket.gethostname()}:{id(self)}"
         start_http_server(settings.METRICS_PORT)
         command_relay_connected.set(0)
@@ -112,8 +115,15 @@ class Command(BaseCommand):
         return self._channel
 
     def _drop_channel(self) -> None:
-        # the broker closes the channel on 404 and 403, so the next publish needs a fresh one
-        self._channel = None
+        # the broker closes the channel itself on 404 and 403, but an unroutable publish leaves
+        # it open: dropping only the reference leaks one channel per cycle and the connection
+        # eventually hits channel_max, exactly while the topology is missing
+        channel, self._channel = self._channel, None
+        if channel is not None and channel.is_open:
+            try:
+                channel.close()
+            except AMQPError:
+                pass
 
     def _drop_connection(self) -> None:
         self._channel = None
@@ -189,7 +199,6 @@ class Command(BaseCommand):
                 self._open(), messaging.COMMANDS_EXCHANGE, row.routing_key, envelope
             )
         except (UnroutableError, ChannelClosedByBroker) as exc:
-
             self._drop_channel()
             log.warning("command topology not ready: %s", exc)
             command_service.schedule_retry(row, backoff=_backoff(row.attempts), error=str(exc)[:1000])
