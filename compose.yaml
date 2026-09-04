@@ -181,6 +181,55 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  commands-consumer:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: prod
+    env_file: [.env]
+    command: python manage.py consume_commands
+    environment:
+      COMMANDS_METRICS_PORT: "9102"
+    expose:
+      - "9102"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:9102/metrics').read().decode())" | grep -qx 'commands_consumer_connected 1.0'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  commands-relay:
+    build:
+      context: .
+      dockerfile: services/order_operations/Dockerfile
+      target: prod
+    command: python manage.py publish_commands --loop
+    environment:
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
+      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_COMMANDS_RABBITMQ_URL: ${OPERATIONS_COMMANDS_RABBITMQ_URL:-}
+      OPERATIONS_METRICS_PORT: "9103"
+    expose:
+      - "9103"
+    depends_on:
+      operations-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      commands-consumer:
+        condition: service_healthy
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend

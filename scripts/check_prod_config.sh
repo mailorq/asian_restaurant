@@ -19,7 +19,7 @@ MANDATORY=(
   RABBITMQ_ADMIN_USER RABBITMQ_ADMIN_PASSWORD RABBITMQ_ERLANG_COOKIE
   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD OPERATIONS_COMMANDS_MQ_PASSWORD
   OPERATIONS_SECRET_KEY OPERATIONS_ALLOWED_HOSTS OPERATIONS_DATABASE_URL OPERATIONS_RABBITMQ_URL
-  OPERATIONS_BRIDGE_CONSUME_URL OPERATIONS_BRIDGE_PUBLISH_URL
+  OPERATIONS_BRIDGE_CONSUME_URL OPERATIONS_BRIDGE_PUBLISH_URL OPERATIONS_COMMANDS_RABBITMQ_URL
 )
 
 # CI dummy values (non-dev) so the render can complete; the negative loop below removes them one
@@ -40,9 +40,11 @@ export OPERATIONS_DATABASE_URL=postgres://u:p@operations-db:5432/operations
 export OPERATIONS_RABBITMQ_URL=amqp://u:p@rabbitmq:5672/operations
 export OPERATIONS_BRIDGE_CONSUME_URL=amqp://u:p@rabbitmq:5672/storefront
 export OPERATIONS_BRIDGE_PUBLISH_URL=amqp://u:p@rabbitmq:5672/operations
+export OPERATIONS_COMMANDS_RABBITMQ_URL=amqp://u:p@rabbitmq:5672/storefront
 
 PROD=(--env-file "$EMPTY_ENV" -f compose.yaml -f compose.prod.yaml)
 rendered=$(docker compose "${PROD[@]}" config)
+rendered_json=$(docker compose "${PROD[@]}" config --format json)
 fail=0
 
 # no dev fallbacks / no dev signing material / secret injected as a file / no inline key
@@ -58,9 +60,30 @@ grep -q "run_ops_consumer" <<<"$rendered" && { echo "FAIL: legacy ops consumer p
 grep -B3 -A3 'published: "9090"' <<<"$rendered" | grep -q 'host_ip: 127.0.0.1' || {
   echo "FAIL: prometheus 9090 not bound to loopback"; fail=1; }
 
-# storefront Django processes (backend + relay) start under the production guard; ops services too
-[ "$(grep -c 'DJANGO_PRODUCTION' <<<"$rendered")" -ge 2 ] || { echo "FAIL: DJANGO_PRODUCTION not set on all storefront services"; fail=1; }
-[ "$(grep -c 'OPERATIONS_PRODUCTION' <<<"$rendered")" -ge 3 ] || { echo "FAIL: OPERATIONS_PRODUCTION not set on all ops services"; fail=1; }
+# every Django process must start under its production guard. keyed off the image a service is
+# built from rather than a service count, so a new one cannot satisfy the check by merely existing
+RENDERED_JSON="$rendered_json" python3 - <<'GUARD' || fail=1
+import json, os
+
+GUARD = {"backend/Dockerfile": "DJANGO_PRODUCTION",
+         "services/order_operations/Dockerfile": "OPERATIONS_PRODUCTION"}
+missing = []
+checked = set()
+for name, spec in sorted(json.loads(os.environ["RENDERED_JSON"])["services"].items()):
+    guard = GUARD.get((spec.get("build") or {}).get("dockerfile", ""))
+    if not guard:
+        continue
+    checked.add(guard)
+    if guard not in (spec.get("environment") or {}):
+        missing.append(name + " (" + guard + ")")
+if missing:
+    print("FAIL: production guard missing on: " + ", ".join(missing))
+    raise SystemExit(1)
+unmatched = sorted(set(GUARD.values()) - checked)
+if unmatched:
+    print("FAIL: no service matched the guard for: " + ", ".join(unmatched))
+    raise SystemExit(1)
+GUARD
 grep -Eq "OPERATIONS_ALLOWED_HOSTS:[[:space:]]*'?\*'?[[:space:]]*$" <<<"$rendered" && { echo "FAIL: wildcard ALLOWED_HOSTS"; fail=1; }
 
 # each mandatory variable being unset must make `config` fail (fail-closed, no silent default)

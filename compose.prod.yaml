@@ -9,6 +9,7 @@ x-storefront-prod-env: &storefront-prod-env
   CART_REDIS_URL: ${CART_REDIS_URL:?set CART_REDIS_URL}
   RABBITMQ_URL: ${RABBITMQ_URL:?set RABBITMQ_URL}
   IDENTITY_JWT_KID: ${IDENTITY_JWT_KID:?set IDENTITY_JWT_KID (not the dev kid)}
+  RATELIMIT_TRUST_XFF: "1"
   # signing key is a read-only secret file, never inline (settings reject a non-empty inline key)
   IDENTITY_JWT_PRIVATE_KEY: ""
   IDENTITY_JWT_PRIVATE_KEY_FILE: /run/secrets/identity_jwt_private_key
@@ -87,6 +88,13 @@ services:
     env_file: !reset null
     environment: *storefront-prod-env
 
+  # command consumer is a storefront Django process: same production guard and signing-key secret as the other two
+  commands-consumer:
+    secrets:
+      - identity_jwt_private_key
+    env_file: !reset null
+    environment: *storefront-prod-env
+
   # legacy in-storefront projection consumer (RestaurantOrder). The independent operations
   # service now owns projections in its own database and nothing in the storefront reads
   # RestaurantOrder, so this parallel consumer is not run in production: it is gated behind a
@@ -122,3 +130,13 @@ services:
       OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
       OPERATIONS_BRIDGE_CONSUME_URL: ${OPERATIONS_BRIDGE_CONSUME_URL:?set OPERATIONS_BRIDGE_CONSUME_URL}
       OPERATIONS_BRIDGE_PUBLISH_URL: ${OPERATIONS_BRIDGE_PUBLISH_URL:?set OPERATIONS_BRIDGE_PUBLISH_URL}
+
+  commands-relay:
+    environment:
+      OPERATIONS_PRODUCTION: "1"
+      OPERATIONS_DEBUG: "0"
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:?set OPERATIONS_SECRET_KEY}
+      OPERATIONS_ALLOWED_HOSTS: ${OPERATIONS_ALLOWED_HOSTS:?set OPERATIONS_ALLOWED_HOSTS}
+      OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
+      OPERATIONS_COMMANDS_RABBITMQ_URL: ${OPERATIONS_COMMANDS_RABBITMQ_URL:?set OPERATIONS_COMMANDS_RABBITMQ_URL}
+      OPERATIONS_METRICS_PORT: "9103"
