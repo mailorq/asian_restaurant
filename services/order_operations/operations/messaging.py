@@ -4,6 +4,7 @@ import pika
 from django.conf import settings
 
 EXCHANGE = "operations.events"
+COMMANDS_EXCHANGE = "commands"
 QUEUE = "operations.projection"
 DLX = "operations.dlx"
 DLQ = "operations.projection.dlq"

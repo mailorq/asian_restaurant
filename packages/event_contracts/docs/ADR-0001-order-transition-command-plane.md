@@ -85,7 +85,7 @@ a revocation.
 ## Command states, expiry and delivery uncertainty
 ```
 pending         -> dispatched         request confirmed to the broker
-pending         -> dispatch_failed    confirmed unroutable / NACK (delivery UNKNOWN)
+pending         -> dispatch_failed    publish retries exhausted (delivery UNKNOWN)
 dispatch_failed -> dispatched         successful re-publish
 pending         -> rejected           expired BEFORE dispatch (never published; decided locally)
 {pending, dispatched} -> timed_out    deadline passed, delivery attempted or unknown
@@ -181,14 +181,20 @@ parse -> single transaction.atomic():
 ## Retry, failure and DLQ semantics
 - **broker/network unavailable** - nothing was confirmed: the outbox row stays `pending` with
   exponential backoff and raises an age alert. A DLQ is unreachable in this state by definition, so
-  it is never claimed.
-- **confirmed unroutable / NACK with a live broker** - `dispatch_failed` (non-terminal), long retry
-  plus reconciliation. It never means "the storefront did not run it".
+  it is never claimed. Once the publish attempts are exhausted the command is additionally marked
+  `dispatch_failed` (non-terminal) so it is visible to reconciliation; the row keeps retrying and a
+  later confirm still advances it.
+- **exchange or binding missing (404 / unroutable) with a live broker** - the storefront consumer
+  owns that topology and the publisher holds `configure=^$`, so this is an operator problem and
+  nothing was delivered. The row backs off and alerts; it is never `dispatch_failed`, which would
+  claim delivery is in doubt when it demonstrably never happened.
 - **poison message on the consumer** - dead-lettered to `commands.orders.dlq` by the broker.
 - `timed_out` and `dispatch_failed` are operational states requiring alert and reconciliation; the
   UI must render them as "delivery unconfirmed", never as "nothing happened".
 
 ## API
+Not implemented yet: the transport is in place, but commands are still created through the
+service layer only. The shape below is the agreed contract for the next step.
 ```
 POST /ops-api/orders/{order_id}/transition-commands     Idempotency-Key: <uuid>
      body: expected_status, target_status, reason

@@ -1,7 +1,7 @@
 """business metrics. registered on the shared prometheus_client registry and
 served at /metrics alongside django-prometheus infra/perf series."""
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 orders_created_total = Counter(
     "orders_created_total",
@@ -42,4 +42,18 @@ catalog_cache_events_total = Counter(
     "catalog_cache_events_total",
     "Menu catalog cache lookups.",
     ["event"],  # hit | miss
+)
+
+
+# readiness for the command consumer: 1 only while it holds a connection with the command
+# topology declared and is consuming. a live /metrics alone does not prove it applies commands
+commands_consumer_connected = Gauge(
+    "commands_consumer_connected",
+    "1 when the command consumer is connected with its topology declared, else 0.",
+)
+
+commands_applied_total = Counter(
+    "commands_applied_total",
+    "Transition commands applied, by outcome.",
+    ["outcome"],  # succeeded | rejected | replayed
 )
