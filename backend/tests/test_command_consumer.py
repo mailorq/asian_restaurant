@@ -79,23 +79,14 @@ def order(user, make_product, seed_cart):
 
 
 @pytest.fixture
-def actor(employee_user):
-    from employee import service as employee_service
-
-    employee_service.set_employee_role(actor=employee_user, target=employee_user, grant=True)
-    employee_user.refresh_from_db()
-    return employee_user
-
-
-@pytest.fixture
 def consumer():
     return ConsumerCommand()
 
 
-def test_applied_command_is_acked_and_moves_the_order(consumer, order, actor):
+def test_applied_command_is_acked_and_moves_the_order(consumer, order, employee_user):
     channel = FakeChannel()
 
-    consumer._on_message(channel, _method(), _properties(), _body(_request(actor, order.id)))
+    consumer._on_message(channel, _method(), _properties(), _body(_request(employee_user, order.id)))
 
     assert channel.acked == [1] and channel.nacked == []
     order.refresh_from_db()
@@ -103,9 +94,9 @@ def test_applied_command_is_acked_and_moves_the_order(consumer, order, actor):
     assert OrderOutbox.objects.filter(event_type="orders.transition.succeeded.v1").count() == 1
 
 
-def test_redelivery_replays_the_stored_outcome_without_a_second_event(consumer, order, actor):
+def test_redelivery_replays_the_stored_outcome_without_a_second_event(consumer, order, employee_user):
     channel = FakeChannel()
-    body = _body(_request(actor, order.id))
+    body = _body(_request(employee_user, order.id))
 
     consumer._on_message(channel, _method(delivery_tag=1), _properties(), body)
     consumer._on_message(channel, _method(delivery_tag=2), _properties(), body)
@@ -115,10 +106,10 @@ def test_redelivery_replays_the_stored_outcome_without_a_second_event(consumer, 
     assert OrderOutbox.objects.filter(event_type="orders.transition.succeeded.v1").count() == 1
 
 
-def test_rejected_command_is_still_acked(consumer, order, actor):
+def test_rejected_command_is_still_acked(consumer, order, employee_user):
     channel = FakeChannel()
     # the order is at created, so a command expecting delivering is refused, not retried
-    body = _body(_request(actor, order.id, expected="delivering", target="delivered"))
+    body = _body(_request(employee_user, order.id, expected="delivering", target="delivered"))
 
     consumer._on_message(channel, _method(), _properties(), body)
 
@@ -134,9 +125,9 @@ def test_unparsable_body_goes_to_the_dlq(consumer):
     assert channel.nacked == [(1, False)] and channel.acked == []
 
 
-def test_foreign_event_type_goes_to_the_dlq(consumer, order, actor):
+def test_foreign_event_type_goes_to_the_dlq(consumer, order, employee_user):
     channel = FakeChannel()
-    body = _body(_request(actor, order.id), event_type="orders.transition.succeeded.v1")
+    body = _body(_request(employee_user, order.id), event_type="orders.transition.succeeded.v1")
 
     consumer._on_message(channel, _method(), _properties(), body)
 
@@ -144,14 +135,14 @@ def test_foreign_event_type_goes_to_the_dlq(consumer, order, actor):
     assert CommandInbox.objects.count() == 0
 
 
-def test_database_failure_is_retried_with_an_incremented_header(consumer, order, actor, monkeypatch):
+def test_database_failure_is_retried_with_an_incremented_header(consumer, order, employee_user, monkeypatch):
     channel = FakeChannel()
     monkeypatch.setattr(
         "orders.management.commands.consume_commands.apply_transition_command",
         lambda *a, **k: (_ for _ in ()).throw(DatabaseError("deadlock")),
     )
 
-    consumer._on_message(channel, _method(), _properties(), _body(_request(actor, order.id)))
+    consumer._on_message(channel, _method(), _properties(), _body(_request(employee_user, order.id)))
 
     assert len(channel.published) == 1
     republished = channel.published[0]
@@ -161,7 +152,7 @@ def test_database_failure_is_retried_with_an_incremented_header(consumer, order,
     assert channel.acked == [1] and channel.nacked == []
 
 
-def test_dropped_database_connection_is_retried_not_dead_lettered(consumer, order, actor, monkeypatch):
+def test_dropped_database_connection_is_retried_not_dead_lettered(consumer, order, employee_user, monkeypatch):
     from django.db import InterfaceError
 
     channel = FakeChannel()
@@ -170,13 +161,13 @@ def test_dropped_database_connection_is_retried_not_dead_lettered(consumer, orde
         lambda *a, **k: (_ for _ in ()).throw(InterfaceError("connection already closed")),
     )
 
-    consumer._on_message(channel, _method(), _properties(), _body(_request(actor, order.id)))
+    consumer._on_message(channel, _method(), _properties(), _body(_request(employee_user, order.id)))
 
     assert len(channel.published) == 1 and channel.acked == [1]
     assert channel.nacked == []
 
 
-def test_exhausted_retries_go_to_the_dlq(consumer, order, actor, monkeypatch):
+def test_exhausted_retries_go_to_the_dlq(consumer, order, employee_user, monkeypatch):
     channel = FakeChannel()
     monkeypatch.setattr(
         "orders.management.commands.consume_commands.apply_transition_command",
@@ -184,27 +175,27 @@ def test_exhausted_retries_go_to_the_dlq(consumer, order, actor, monkeypatch):
     )
     properties = _properties({"x-retries": topology.MAX_RETRIES})
 
-    consumer._on_message(channel, _method(), properties, _body(_request(actor, order.id)))
+    consumer._on_message(channel, _method(), properties, _body(_request(employee_user, order.id)))
 
     assert channel.nacked == [(1, False)] and channel.published == []
 
 
-def test_unexpected_failure_dead_letters_instead_of_blocking_the_queue(consumer, order, actor, monkeypatch):
+def test_unexpected_failure_dead_letters_instead_of_blocking_the_queue(consumer, order, employee_user, monkeypatch):
     channel = FakeChannel()
     monkeypatch.setattr(
         "orders.management.commands.consume_commands.apply_transition_command",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bug")),
     )
 
-    consumer._on_message(channel, _method(), _properties(), _body(_request(actor, order.id)))
+    consumer._on_message(channel, _method(), _properties(), _body(_request(employee_user, order.id)))
 
     # a single bad command must not stall every other one behind it
     assert channel.nacked == [(1, False)] and channel.published == []
 
 
-def test_expired_command_is_rejected_not_applied(consumer, order, actor):
+def test_expired_command_is_rejected_not_applied(consumer, order, employee_user):
     channel = FakeChannel()
-    body = _body(_request(actor, order.id, ttl_seconds=-1))
+    body = _body(_request(employee_user, order.id, ttl_seconds=-1))
 
     consumer._on_message(channel, _method(), _properties(), body)
 
