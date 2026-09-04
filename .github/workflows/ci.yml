@@ -36,12 +36,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      rabbitmq:
+        # guest is loopback-only, and a health probe run as root writes an .erlang.cookie the server cannot read; the transport test waits for the port itself
+        image: rabbitmq:3.13-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports: ["5672:5672"]
     env:
       DJANGO_SECRET_KEY: ci-test-key
       DJANGO_DEBUG: "1"
       DATABASE_URL: postgres://asian:postgres@localhost:5432/asian_restaurant
       REDIS_URL: redis://localhost:6379/1
       CART_REDIS_URL: redis://localhost:6379/0
+      COMMANDS_MQ_URL_FOR_TRANSPORT: amqp://ci:ci@localhost:5672/
+      REQUIRE_COMMAND_TRANSPORT_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
