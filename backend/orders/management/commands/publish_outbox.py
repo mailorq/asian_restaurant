@@ -61,6 +61,8 @@ class Command(BaseCommand):
             start_http_server(options["metrics_port"])
             gauge = Gauge("outbox_oldest_pending_age_seconds", "age of the oldest pending outbox event")
 
+        self._converge_topology()
+
         if options["loop"]:
             self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
             while True:
@@ -68,6 +70,16 @@ class Command(BaseCommand):
                 time.sleep(options["interval"])
         else:
             self.stdout.write(self.style.SUCCESS(f"published {self._drain(worker_id, gauge)} event(s)"))
+
+    def _converge_topology(self) -> None:
+        # the sole publisher, so this is where a stale binding gets cleaned up once per start
+        conn = messaging.connect()
+        try:
+            channel = conn.channel()
+            messaging.declare_topology(channel)
+            messaging.converge_legacy_binding(channel)
+        finally:
+            conn.close()
 
     def _claim(self, worker_id: str) -> list[OrderOutbox]:
         now = timezone.now()

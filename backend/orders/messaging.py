@@ -51,9 +51,12 @@ def declare_topology(channel: "pika.channel.Channel") -> None:
 
     # main ops queue; poison messages nacked here dead-letter straight to the DLQ
     channel.queue_declare(queue=OPS_QUEUE, durable=True, arguments={"x-dead-letter-exchange": DLX})
-    
+
     for key in LEGACY_PROJECTION_KEYS:
         channel.queue_bind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key=key)
+
+
+def converge_legacy_binding(channel) -> None:
     channel.queue_unbind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key="order.*")
 
 

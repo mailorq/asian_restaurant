@@ -200,3 +200,35 @@ def test_parallel_workers_do_not_double_claim():
     assert set(ids_a).isdisjoint(ids_b)  # skip_locked -> no row claimed twice
     assert len(ids_a) + len(ids_b) <= 20
     OrderOutbox.objects.all().delete()  # transaction=True: clean up explicitly
+
+
+def test_legacy_queue_is_bound_only_to_what_it_can_process():
+    from unittest.mock import MagicMock
+
+    from orders import messaging
+
+    channel = MagicMock()
+    messaging.declare_topology(channel)
+
+    ops_binds = [
+        c.kwargs["routing_key"]
+        for c in channel.queue_bind.call_args_list
+        if c.kwargs.get("queue") == messaging.OPS_QUEUE and c.kwargs.get("exchange") == messaging.EXCHANGE
+    ]
+    assert ops_binds == list(messaging.LEGACY_PROJECTION_KEYS)
+    # the wildcard also matches transition outcomes, which this queue would dead-letter
+    assert "order.*" not in ops_binds
+    channel.queue_unbind.assert_not_called()
+
+
+def test_legacy_wildcard_binding_is_converged_away():
+    from unittest.mock import MagicMock
+
+    from orders import messaging
+
+    channel = MagicMock()
+    messaging.converge_legacy_binding(channel)
+
+    channel.queue_unbind.assert_called_once_with(
+        queue=messaging.OPS_QUEUE, exchange=messaging.EXCHANGE, routing_key="order.*"
+    )
