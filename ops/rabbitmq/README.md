@@ -70,3 +70,24 @@ running broker with an existing volume:
 Never `docker compose down -v` or delete the `rabbitmqdata` volume to apply credential
 changes — that destroys durable queues and unacked messages. Adding a new vhost/user is
 likewise just another `provision.sh` run.
+
+## Dead-letter queues
+
+Both DLQ alerts have a matching operator action; neither tool consumes anything while listing.
+
+| queue | command |
+|---|---|
+| `orders.ops.dlq`, `commands.orders.dlq` | `backend: manage.py dlq <queue> --list \| --replay N \| --drop N --yes --reason ...` |
+| `operations.projection.dlq` | `operations: manage.py dlq --list \| --replay N \| --drop N --yes --reason ...` |
+
+Replay puts a message back only after the publish is confirmed, and clears the spent retry budget
+so a fixed cause gets a fresh attempt; `x-replayed-by` and `x-replayed-at` stay on the message.
+Discarding is permanent, so it needs `--yes` and `--reason`, and every discarded body is logged.
+
+The two differ in where they republish, because the topologies differ:
+- operations goes through `operations.events` with the original routing key. Only the projection
+  and outcome queues are bound to it, so each message returns to the one it fell out of.
+- the storefront goes straight to the owning queue. `orders` also feeds the operations bridge, so
+  a republish there would project the same event a second time. `operations_consumer` could not
+  do this anyway: publishing to the default exchange needs write on `amq.default`, which
+  `^operations\.` does not grant.
