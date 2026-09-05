@@ -360,3 +360,83 @@ def test_bridge_forwards_absent_causation_as_none():
         {"command_id": str(uuid.uuid4()), "order_id": 42, "from_status": "created", "status": "confirmed"},
     )
     assert envelope["causation_id"] is None
+
+
+def _envelope_body(event_id=None, correlation_id=None):
+    return {
+        "event_id": event_id or str(uuid.uuid4()),
+        "event_type": "orders.transition.succeeded.v1",
+        "schema_version": 1,
+        "occurred_at": OCCURRED_AT,
+        "producer": "storefront",
+        "aggregate": {"type": "order", "id": "42", "version": 2},
+        "correlation_id": correlation_id or str(uuid.uuid4()),
+        "causation_id": str(uuid.uuid4()),
+        "data": {"command_id": str(uuid.uuid4()), "order_id": 42,
+                 "from_status": "created", "status": "confirmed"},
+    }
+
+
+def _envelope_delivery(envelope):
+    props = SimpleNamespace(
+        type=envelope["event_type"],
+        message_id=envelope["event_id"],
+        correlation_id=envelope["correlation_id"],
+        content_type="application/json",
+        headers={"event_id": envelope["event_id"], "occurred_at": OCCURRED_AT},
+    )
+    method = SimpleNamespace(delivery_tag=1, routing_key="order.transition_succeeded")
+    return props, method, json.dumps(envelope).encode()
+
+
+def test_a_body_that_is_already_an_envelope_is_relayed_unchanged():
+    cmd = _cmd()
+    ch = MagicMock()
+    envelope = _envelope_body()
+    props, method, body = _envelope_delivery(envelope)
+
+    cmd._on_message(ch, method, props, body)
+
+    cmd.publish_channel.basic_publish.assert_called_once()
+    _, kwargs = cmd.publish_channel.basic_publish.call_args
+    assert json.loads(kwargs["body"]) == envelope
+    ch.basic_ack.assert_called_once_with(method.delivery_tag)
+    ch.basic_nack.assert_not_called()
+
+
+def test_an_envelope_body_keeps_its_own_provenance():
+    cmd = _cmd()
+    envelope = _envelope_body()
+    props, method, body = _envelope_delivery(envelope)
+
+    cmd._on_message(MagicMock(), method, props, body)
+
+    published = json.loads(cmd.publish_channel.basic_publish.call_args[1]["body"])
+    assert published["event_id"] == envelope["event_id"]
+    assert published["causation_id"] == envelope["causation_id"]
+    assert published["occurred_at"] == envelope["occurred_at"]
+
+
+def test_an_envelope_whose_type_contradicts_the_delivery_is_poison():
+    cmd = _cmd()
+    ch = MagicMock()
+    envelope = _envelope_body()
+    props, method, _ = _envelope_delivery(envelope)
+    envelope["event_type"] = "orders.transition.rejected.v1"
+
+    cmd._on_message(ch, method, props, json.dumps(envelope).encode())
+
+    ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=False)
+    cmd.publish_channel.basic_publish.assert_not_called()
+
+
+def test_a_legacy_body_without_origin_time_is_still_refused():
+    cmd = _cmd()
+    ch = MagicMock()
+    props, method, body = _legacy()
+    props.headers.pop("occurred_at")
+
+    cmd._on_message(ch, method, props, body)
+
+    ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=False)
+    cmd.publish_channel.basic_publish.assert_not_called()

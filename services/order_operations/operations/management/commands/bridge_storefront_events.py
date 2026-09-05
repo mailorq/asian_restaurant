@@ -167,6 +167,11 @@ _PRODUCER = {
 }
 
 
+def is_envelope(payload) -> bool:
+    """a body already shaped as a contract envelope, which needs no reconstruction"""
+    return isinstance(payload, dict) and "event_type" in payload and "data" in payload
+
+
 def build_envelope(properties, event_type: str, legacy: dict) -> dict:
     headers = properties.headers or {}
     agg_type, id_key = _AGGREGATE[event_type]
@@ -251,14 +256,20 @@ class Command(BaseCommand):
         if event_type is None:
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
-        if not (properties.headers or {}).get("occurred_at"):
-            # origin time is required; substituting now() would falsify provenance
-            log.warning("bridge missing_occurred_at -> DLQ", extra={"message_id": properties.message_id})
-            channel.basic_nack(method.delivery_tag, requeue=False)
-            return
         try:
-            legacy = json.loads(body)
-            envelope = build_envelope(properties, event_type, legacy)
+            payload = json.loads(body)
+            if is_envelope(payload):
+                if payload.get("event_type") != event_type:
+                    raise ValueError("envelope event_type does not match the delivery type")
+                envelope = payload
+            else:
+                if not (properties.headers or {}).get("occurred_at"):
+                    # origin time is required; substituting now() would falsify provenance
+                    log.warning("bridge missing_occurred_at -> DLQ",
+                                extra={"message_id": properties.message_id})
+                    channel.basic_nack(method.delivery_tag, requeue=False)
+                    return
+                envelope = build_envelope(properties, event_type, payload)
             parse_event(envelope)
         except Exception:
             log.exception("bridge poison message -> DLQ")
