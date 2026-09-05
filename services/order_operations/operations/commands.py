@@ -36,9 +36,23 @@ DISPATCHABLE = frozenset(
 )
 IDEMPOTENCY_KEY_MAX = 200
 
+RESOLVABLE = frozenset(
+    {OperationCommand.Status.TIMED_OUT, OperationCommand.Status.DISPATCH_FAILED}
+)
+MANUAL_OUTCOMES = {
+    "succeeded": OperationCommand.Status.SUCCEEDED,
+    "rejected": OperationCommand.Status.REJECTED,
+}
+MANUAL_RESULT_CODE = "resolved_manually"
+RESOLUTION_REASON_MAX = 500
+
 
 class CommandConflict(Exception):
     """A duplicate idempotency identity carrying a different request."""
+
+
+class CommandNotResolvable(Exception):
+    pass
 
 
 class OutcomeMismatch(Exception):
@@ -190,7 +204,8 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
         if str(causation_id) != str(locked.request_event_id):
             raise OutcomeMismatch("causation_id does not match command request_event_id")
         _assert_outcome_matches_intent(locked, data, success)
-        if locked.status in OperationCommand.TERMINAL:
+        overruled = _manual_verdict_contradicted(locked, success)
+        if locked.status in OperationCommand.TERMINAL and not overruled:
             _settle(row)  # terminal is final; the row is only closed if an earlier pass missed it
             return locked
         if success:
@@ -202,6 +217,8 @@ def apply_transition_outcome(data, *, correlation_id, causation_id) -> Operation
             locked.result_code = str(data.reject_code)
             locked.result_detail = data.detail
         locked.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+        if overruled:
+            _audit(locked, actor=locked.actor_id, role=ACTOR_ROLE, result="manual_resolution_overruled")
         _settle(row)
         return locked
 
@@ -213,6 +230,53 @@ class ClaimResult(StrEnum):
     UNAVAILABLE = "unavailable"  # already published, suppressed, or command finished
 
 
+def _manual_verdict_contradicted(command: OperationCommand, success: bool) -> bool:
+    """
+    true when a late outcome disagrees with an operator's manual resolution
+
+    a manual resolution is a human verdict about delivery the service could not observe, while
+    the storefront is the sole writer of order state, so its outcome outranks that verdict
+    """
+    if command.result_code != MANUAL_RESULT_CODE:
+        return False
+    verdict = OperationCommand.Status.SUCCEEDED if success else OperationCommand.Status.REJECTED
+    return command.status != verdict
+
+
+def resolve_manually(command: OperationCommand, *, outcome: str, operator: str, reason: str) -> OperationCommand:
+    """
+    closes a command whose delivery never resolved, on the verdict of an operator who checked
+
+    the service has no evidence either way here, so the decision is a human one and is recorded
+    with its author and its grounds. an already closed command is refused rather than reclosed:
+    a second verdict may contradict the first, and only the operator can tell
+    """
+    if outcome not in MANUAL_OUTCOMES:
+        raise ValueError(f"outcome must be one of {sorted(MANUAL_OUTCOMES)}")
+    operator, reason = operator.strip(), reason.strip()
+    if not operator:
+        raise ValueError("an operator is required")
+    if not reason:
+        raise ValueError("a reason is required")
+    if len(reason) > RESOLUTION_REASON_MAX:
+        raise ValueError(f"reason exceeds {RESOLUTION_REASON_MAX} characters")
+
+    with transaction.atomic():
+        row = OperationsOutbox.objects.select_for_update().filter(command_id=command.pk).first()
+        locked = OperationCommand.objects.select_for_update().get(pk=command.pk)
+        if locked.status not in RESOLVABLE:
+            raise CommandNotResolvable(
+                f"{locked.command_id} is {locked.status}, only {sorted(RESOLVABLE)} may be resolved"
+            )
+        locked.status = MANUAL_OUTCOMES[outcome]
+        locked.result_code = MANUAL_RESULT_CODE
+        locked.result_detail = f"{operator}: {reason}"
+        locked.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+        _audit(locked, actor=operator, role="operator", result=MANUAL_RESULT_CODE)
+        _settle(row)
+        return locked
+
+
 def _suppress_expired(row: OperationsOutbox, command: OperationCommand) -> None:
     row.status = OperationsOutbox.Status.SUPPRESSED
     row.save(update_fields=["status"])
@@ -220,9 +284,13 @@ def _suppress_expired(row: OperationsOutbox, command: OperationCommand) -> None:
     command.result_code = str(TransitionRejectCode.command_expired)
     command.result_detail = "expired before any publish attempt"
     command.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+    _audit(command, actor=command.actor_id, role=ACTOR_ROLE, result="command_expired")
+
+
+def _audit(command: OperationCommand, *, actor, role: str, result: str) -> None:
     OperationAuditLog.objects.create(
-        actor_id=str(command.actor_id), actor_role=ACTOR_ROLE, action=command.command_type,
-        target=command.target, command_id=command.command_id, result="command_expired",
+        actor_id=str(actor)[:64], actor_role=role, action=command.command_type,
+        target=command.target, command_id=command.command_id, result=result,
     )
 
 

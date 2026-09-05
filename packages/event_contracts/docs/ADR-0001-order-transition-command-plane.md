@@ -90,6 +90,7 @@ dispatch_failed -> dispatched         successful re-publish
 pending         -> rejected           expired BEFORE dispatch (never published; decided locally)
 {pending, dispatched} -> timed_out    deadline passed, delivery attempted or unknown
 {pending, dispatched, timed_out, dispatch_failed} -> succeeded | rejected   outcome applied
+{timed_out, dispatch_failed} -> succeeded | rejected   operator verdict (manual, audited)
 ```
 **Terminal = `{succeeded, rejected}`.** `command_expired` and `actor_not_authorized` are reject
 codes inside `rejected`, not extra states.
@@ -99,6 +100,7 @@ The command outbox row carries its own end states, and only `published` means a 
 published    the broker confirmed the request
 suppressed   expired before any publish attempt, decided locally
 settled      an outcome proved delivery while the confirm was lost
+failed       publish attempts spent; delivery unknown, never republished
 ```
 `settled` exists because an outcome is stronger evidence than a confirm: it can only have been
 produced by a storefront that received the request. Without it a row whose confirm never arrived
@@ -182,8 +184,8 @@ parse -> single transaction.atomic():
 - **broker/network unavailable** - nothing was confirmed: the outbox row stays `pending` with
   exponential backoff and raises an age alert. A DLQ is unreachable in this state by definition, so
   it is never claimed. Once the publish attempts are exhausted the command is additionally marked
-  `dispatch_failed` (non-terminal) so it is visible to reconciliation; the row keeps retrying and a
-  later confirm still advances it.
+  `dispatch_failed` (non-terminal) so it is visible to reconciliation, and the row becomes `failed`:
+  the attempts are spent, so nothing republishes it and only an outcome or an operator can close it.
 - **exchange or binding missing (404 / unroutable) with a live broker** - the storefront consumer
   owns that topology and the publisher holds `configure=^$`, so this is an operator problem and
   nothing was delivered. The row backs off and alerts; it is never `dispatch_failed`, which would
@@ -191,6 +193,13 @@ parse -> single transaction.atomic():
 - **poison message on the consumer** - dead-lettered to `commands.orders.dlq` by the broker.
 - `timed_out` and `dispatch_failed` are operational states requiring alert and reconciliation; the
   UI must render them as "delivery unconfirmed", never as "nothing happened".
+- neither state has an automatic exit, because the service has no evidence about delivery either
+  way. An operator who checked the order in the storefront supplies that evidence with
+  `manage.py resolve_command <command_id> --outcome succeeded|rejected --operator <who> --reason
+  <what was checked>`, which records the author and the grounds in the audit log and closes the
+  outbox row. It is a shell command, not an API endpoint: the verdict asserts storefront state
+  that no employee request can prove. A late outcome that contradicts the verdict wins and is
+  audited as `manual_resolution_overruled` - the storefront is the sole writer of order state.
 
 ## API
 ```
