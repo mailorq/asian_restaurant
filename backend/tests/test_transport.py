@@ -475,3 +475,34 @@ def test_the_relay_reports_the_age_of_the_oldest_unsent_event(monkeypatch):
 
     reported = gauge.collect()[0].samples[0].value
     assert 110 <= reported <= 130, f"the backlog age reported as {reported}"
+
+
+def test_a_connection_lost_while_idle_is_rebuilt_and_the_message_retried(db, monkeypatch):
+    """the relay holds one connection and does no I/O between events
+
+    nothing services its heartbeats while the outbox is empty, so the broker eventually drops it.
+    the next event must not pay for that with a failed attempt and a backoff
+    """
+    from pika.exceptions import StreamLostError
+
+    from orders import messaging
+    from orders.models import OrderOutbox
+
+    channels = []
+    monkeypatch.setattr(messaging, "connect", lambda: _FakeConnection(channels))
+    calls = {"n": 0}
+
+    def dropped_once(channel, exchange, routing_key, event_type, payload, headers):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise StreamLostError("Stream connection lost")
+
+    monkeypatch.setattr(messaging, "publish_message", dropped_once)
+    _pending_rows(1)
+
+    _relay_with(monkeypatch, lambda: _FakeConnection(channels))._drain("w1")
+
+    assert calls["n"] == 2, "the publisher did not rebuild the connection and retry"
+    row = OrderOutbox.objects.get()
+    assert row.status == OrderOutbox.Status.PUBLISHED
+    assert row.attempts == 1, "a reconnect must not burn an extra attempt"
