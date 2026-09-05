@@ -157,7 +157,9 @@ def test_clear_sync_is_version_scoped(make_product):
     assert service._sync_redis().exists(key) == 1
 
     assert service.clear_sync(key, 3) is True  # matching version -> cleared
-    assert service._sync_redis().exists(key) == 0
+    items, version = service.read_sync(key)
+    assert items == {}
+    assert version > 3  # the counter outlives the items it guarded
 
 
 def test_merge_sums_quantities_and_render_caps_to_stock(make_product):

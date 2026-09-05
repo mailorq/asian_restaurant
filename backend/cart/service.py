@@ -14,6 +14,8 @@ VERSION_FIELD = "v"
 
 # Atomic compare-and-set: optionally guards on expected version, applies the op,
 # bumps the version and refreshes the TTL in a single round-trip.
+# An emptied cart keeps its version field: the counter must never rewind, or a write addressed
+# to a previous cart would pass the check meant to reject it.
 #   KEYS[1] = cart key
 #   ARGV[1] = expected version (-1 skips the check)
 #   ARGV[2] = ttl seconds
@@ -48,8 +50,11 @@ elseif op == 'set' then
 elseif op == 'del' then
   redis.call('HDEL', key, ARGV[4])
 elseif op == 'clear' then
+  local nv = cur + 1
   redis.call('DEL', key)
-  return {0, 0}
+  redis.call('HSET', key, 'v', nv)
+  redis.call('EXPIRE', key, tonumber(ARGV[2]))
+  return {0, nv}
 end
 local nv = cur + 1
 redis.call('HSET', key, 'v', nv)
@@ -310,10 +315,13 @@ def read_sync(key: str) -> tuple[dict[int, int], int]:
     return {int(k): int(v) for k, v in raw.items()}, version
 
 
+# ARGV[1] = expected version, ARGV[2] = ttl seconds
 _CLEAR_CAS_LUA = """
 local cur = tonumber(redis.call('HGET', KEYS[1], 'v')) or 0
 if cur == tonumber(ARGV[1]) then
   redis.call('DEL', KEYS[1])
+  redis.call('HSET', KEYS[1], 'v', cur + 1)
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
   return 1
 end
 return 0
@@ -322,7 +330,7 @@ return 0
 
 def clear_sync(key: str, expected_version: int) -> bool:
     try:
-        cleared = _sync_redis().eval(_CLEAR_CAS_LUA, 1, key, int(expected_version))
+        cleared = _sync_redis().eval(_CLEAR_CAS_LUA, 1, key, int(expected_version), CART_TTL)
     except RedisError as exc:
         raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
     return bool(cleared)
@@ -336,6 +344,9 @@ def clear_sync(key: str, expected_version: int) -> bool:
 # returns the resulting version (0 when the cart was dropped)
 _REMOVE_PURCHASED_LUA = """
 local key = KEYS[1]
+if redis.call('EXISTS', key) == 0 then
+  return 0
+end
 local i = 2
 local changed = false
 while i < #ARGV do
@@ -352,16 +363,12 @@ while i < #ARGV do
   end
   i = i + 2
 end
-if redis.call('HLEN', key) <= 1 then
-  redis.call('DEL', key)
-  return 0
-end
 local nv = tonumber(redis.call('HGET', key, 'v')) or 0
 if changed then
   nv = nv + 1
-  redis.call('HSET', key, 'v', nv)
-  redis.call('EXPIRE', key, tonumber(ARGV[1]))
 end
+redis.call('HSET', key, 'v', nv)
+redis.call('EXPIRE', key, tonumber(ARGV[1]))
 return nv
 """
 

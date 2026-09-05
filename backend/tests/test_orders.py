@@ -36,7 +36,7 @@ def test_checkout_creates_order_and_decrements_stock(client, user, make_product,
 
     product.refresh_from_db()
     assert product.stock_quantity == 8  # 10 - 2
-    assert cart_service.read_sync(cart_service.user_key(user.id)) == ({}, 0)  # cart cleared
+    assert cart_service.read_sync(cart_service.user_key(user.id))[0] == {}  # cart cleared
     assert OrderOutbox.objects.filter(aggregate_id=str(data["id"]), event_type="order.created").exists()
 
 
@@ -96,7 +96,7 @@ def test_retry_after_lost_response_clears_the_uncleared_cart(user, make_product,
     again = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-retry-1")
 
     assert again.pk == order.pk
-    assert cart_service.read_sync(key) == ({}, 0)
+    assert cart_service.read_sync(key)[0] == {}
     product.refresh_from_db()
     assert product.stock_quantity == 8  # the replay never decrements stock twice
 
