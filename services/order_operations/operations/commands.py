@@ -321,6 +321,24 @@ def confirm_dispatch(row: OperationsOutbox) -> bool:
         return True
 
 
+def abandon_row(row: OperationsOutbox, *, error: str = "") -> bool:
+    """closes a row whose publish attempts are spent
+
+    only the row is terminal here. the attempt stamp means the message may have reached the
+    storefront, so the command stays open and an outcome may still finalise it
+    """
+    held = _held(row)
+    if held is None:
+        return False
+    return bool(
+        OperationsOutbox.objects.filter(**held).update(
+            status=OperationsOutbox.Status.FAILED, attempts=F("attempts") + 1,
+            last_error=error[:1000], next_attempt_at=None,
+            locked_until=None, locked_by="", lease_token=None,
+        )
+    )
+
+
 def schedule_retry(row: OperationsOutbox, *, backoff: timedelta, error: str = "") -> bool:
     """releases the lease for a later attempt, only for the worker that still holds it"""
     held = _held(row)

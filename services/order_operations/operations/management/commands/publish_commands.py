@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 BATCH = 50
 LEASE = timedelta(seconds=60)
 BACKOFF_BASE_SECONDS = 2
-BACKOFF_MAX_SECONDS = 300
+BACKOFF_MAX_SECONDS = 64
 MAX_ATTEMPTS = 5
 AGGREGATE_TYPE = "order"
 
@@ -115,9 +115,7 @@ class Command(BaseCommand):
         return self._channel
 
     def _drop_channel(self) -> None:
-        # the broker closes the channel itself on 404 and 403, but an unroutable publish leaves
-        # it open: dropping only the reference leaks one channel per cycle and the connection
-        # eventually hits channel_max, exactly while the topology is missing
+        # the broker closes the channel on 404 and 403; an unroutable publish leaves it open
         channel, self._channel = self._channel, None
         if channel is not None and channel.is_open:
             try:
@@ -222,14 +220,27 @@ class Command(BaseCommand):
 
     def _defer(self, row: OperationsOutbox, exc: Exception) -> None:
         attempts = row.attempts + 1
-        if not command_service.schedule_retry(row, backoff=_backoff(attempts), error=str(exc)[:1000]):
+        if attempts < MAX_ATTEMPTS:
+            if command_service.schedule_retry(row, backoff=_backoff(attempts),
+                                              error=str(exc)[:1000]):
+                command_dispatch_total.labels("retried").inc()
+            else:
+                command_dispatch_total.labels("superseded").inc()
+            return
+
+        if not command_service.abandon_row(row, error=str(exc)[:1000]):
             command_dispatch_total.labels("superseded").inc()
             return
-        command_dispatch_total.labels("retried").inc()
-        if attempts < MAX_ATTEMPTS or row.command_id is None:
+        command_dispatch_total.labels("abandoned").inc()
+        log.error(
+            "command abandoned after %s publish attempts", attempts,
+            extra={"event_id": str(row.event_id), "correlation_id": str(row.correlation_id),
+                   "attempts": attempts, "reason": type(exc).__name__},
+        )
+        if row.command_id is None:
             return
         command = OperationCommand.objects.filter(pk=row.command_id).first()
         if command is not None:
-            # retries exhausted with delivery unknown; non-terminal, a late outcome still wins
+            # delivery is unknown, so the command stays open for reconciliation
             command_service.mark_dispatch_failed(command)
             command_dispatch_total.labels("dispatch_failed").inc()

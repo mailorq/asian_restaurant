@@ -145,8 +145,8 @@ def test_exhausted_attempts_mark_dispatch_failed(monkeypatch):
     _relay(monkeypatch, _raising(AMQPConnectionError("broker down")))._drain(WORKER)
 
     assert _reload(command).status == OperationCommand.Status.DISPATCH_FAILED
-    # non-terminal: the row stays publishable so a later confirm still advances it
-    assert _outbox(command).status == OperationsOutbox.Status.PENDING
+    # the row is terminal, the command is not: an outcome may still arrive and finalise it
+    assert _outbox(command).status == OperationsOutbox.Status.FAILED
 
 
 def test_expired_command_is_finalised_instead_of_published(monkeypatch):
@@ -217,3 +217,60 @@ def test_only_command_events_are_picked_up(monkeypatch):
     _relay(monkeypatch, publish)._drain(WORKER)
 
     assert len(sent) == 1 and sent[0][1] == "orders.transition.requested"
+
+
+def _spend_the_budget(relay, command, attempts):
+    for _ in range(attempts):
+        OperationsOutbox.objects.filter(command=command).update(
+            next_attempt_at=None, locked_until=None
+        )
+        relay._drain(WORKER)
+
+
+def test_row_stops_being_retried_once_the_attempt_budget_is_spent(monkeypatch):
+    command = _command()
+    relay = _relay(monkeypatch, _raising(AMQPConnectionError("broker down")))
+
+    _spend_the_budget(relay, command, publish_commands.MAX_ATTEMPTS + 2)
+
+    row = _outbox(command)
+    assert row.status != OperationsOutbox.Status.PENDING, "the row is still eligible to retry"
+    assert row.lease_token is None and row.locked_until is None
+    assert commands.claim_or_expire(row.pk, worker="w2", lease=publish_commands.LEASE)[0] is (
+        commands.ClaimResult.UNAVAILABLE
+    )
+
+
+def test_a_command_whose_row_failed_is_never_finalised_locally(monkeypatch):
+    command = _command()
+    relay = _relay(monkeypatch, _raising(AMQPConnectionError("broker down")))
+
+    _spend_the_budget(relay, command, publish_commands.MAX_ATTEMPTS + 2)
+
+    # the message may have reached the broker, so only an outcome may finalise the command
+    assert _reload(command).status == OperationCommand.Status.DISPATCH_FAILED
+    assert _reload(command).status not in OperationCommand.TERMINAL
+
+
+def test_attempts_never_exceed_the_declared_budget(monkeypatch):
+    command = _command()
+    relay = _relay(monkeypatch, _raising(AMQPConnectionError("broker down")))
+
+    _spend_the_budget(relay, command, publish_commands.MAX_ATTEMPTS + 5)
+
+    assert _outbox(command).attempts == publish_commands.MAX_ATTEMPTS
+
+
+def test_a_superseded_worker_cannot_abandon_a_row_it_no_longer_holds(monkeypatch):
+    command = _command()
+    _, stale = commands.claim_or_expire(
+        _outbox(command).pk, worker="w1", lease=publish_commands.LEASE
+    )
+    OperationsOutbox.objects.filter(command=command).update(
+        locked_until=commands.timezone.now() - commands.COMMAND_TTL,
+        attempts=publish_commands.MAX_ATTEMPTS - 1,
+    )
+    commands.claim_or_expire(_outbox(command).pk, worker="w2", lease=publish_commands.LEASE)
+
+    assert commands.abandon_row(stale) is False
+    assert _outbox(command).status == OperationsOutbox.Status.PENDING

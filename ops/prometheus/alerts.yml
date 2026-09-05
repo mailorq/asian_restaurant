@@ -43,6 +43,16 @@ groups:
           summary: "commands are not leaving the operations outbox"
           description: "oldest pending command is {{ $value }}s old; the relay or the storefront topology is down."
 
+      - alert: CommandDispatchAbandoned
+        # the row is terminal and nothing will republish it, so the command can only be closed
+        # by an outcome that may never come
+        expr: increase(operations_command_dispatch_total{result="abandoned"}[10m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "a command exhausted its publish attempts"
+          description: "{{ $value }} command(s) abandoned by the relay, delivery unknown, reconcile against the storefront."
+
       - alert: OperationsRetryQueueGrowing
         expr: rabbitmq_queue_messages{queue=~"operations.*retry"} > 20
         for: 5m
