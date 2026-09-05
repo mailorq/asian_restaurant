@@ -126,8 +126,9 @@ def _outbox(**kw):
 
 def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
     row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
-    monkeypatch.setattr(messaging, "publish", Mock(side_effect=Exception("broker down")))
-    Relay()._publish_one("w1", row)
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock(side_effect=Exception("broker down")))
+    relay._publish_one("w1", row)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PENDING
     assert row.attempts == 1
@@ -137,8 +138,9 @@ def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
 
 def test_relay_success_marks_published(monkeypatch):
     row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
-    monkeypatch.setattr(messaging, "publish", Mock())
-    Relay()._publish_one("w1", row)
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock())
+    relay._publish_one("w1", row)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PUBLISHED
     assert row.published_at is not None
@@ -172,8 +174,9 @@ def test_expired_lease_is_reclaimed_by_second_worker():
 def test_publish_not_committed_when_lease_expired(monkeypatch):
     # a slow worker whose lease already expired must not flip status
     row = _outbox(locked_by="w1", locked_until=timezone.now() - timedelta(seconds=1))
-    monkeypatch.setattr(messaging, "publish", Mock())
-    Relay()._publish_one("w1", row)
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock())
+    relay._publish_one("w1", row)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PENDING
 
@@ -216,7 +219,6 @@ def test_legacy_queue_is_bound_only_to_what_it_can_process():
         if c.kwargs.get("queue") == messaging.OPS_QUEUE and c.kwargs.get("exchange") == messaging.EXCHANGE
     ]
     assert ops_binds == list(messaging.LEGACY_PROJECTION_KEYS)
-    # the wildcard also matches transition outcomes, which this queue would dead-letter
     assert "order.*" not in ops_binds
     channel.queue_unbind.assert_not_called()
 
@@ -232,3 +234,115 @@ def test_legacy_wildcard_binding_is_converged_away():
     channel.queue_unbind.assert_called_once_with(
         queue=messaging.OPS_QUEUE, exchange=messaging.EXCHANGE, routing_key="order.*"
     )
+
+
+class _FakeConnection:
+    """stands in for a broker connection and records how often channels are opened"""
+
+    def __init__(self, channels: list) -> None:
+        self.is_open = True
+        self._channels = channels
+
+    def channel(self):
+        from unittest.mock import MagicMock
+
+        chan = MagicMock()
+        chan.is_open = True
+        self._channels.append(chan)
+        return chan
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+def _pending_rows(count: int) -> None:
+    from orders.models import OrderOutbox
+
+    for i in range(count):
+        OrderOutbox.objects.create(
+            aggregate_id=str(i), event_type="order.created",
+            routing_key="order.created", payload={"order_id": i},
+        )
+
+
+def _relay_with(monkeypatch, connect):
+    from orders import messaging
+    from orders.management.commands.publish_outbox import Command
+
+    monkeypatch.setattr(messaging, "connect", connect)
+    return Command()
+
+
+def test_a_batch_shares_one_broker_connection(db, monkeypatch):
+    opened, channels = [], []
+
+    def connect():
+        conn = _FakeConnection(channels)
+        opened.append(conn)
+        return conn
+
+    _pending_rows(3)
+    relay = _relay_with(monkeypatch, connect)
+
+    assert relay._drain("w1") == 3
+    assert len(opened) == 1, f"opened {len(opened)} connections for 3 messages"
+
+
+def test_topology_is_not_declared_per_message(db, monkeypatch):
+    from orders import messaging
+
+    declared = []
+    channels = []
+    monkeypatch.setattr(messaging, "connect", lambda: _FakeConnection(channels))
+    monkeypatch.setattr(messaging, "declare_topology", lambda channel: declared.append(channel))
+
+    _pending_rows(3)
+    _relay_with(monkeypatch, lambda: _FakeConnection(channels))._drain("w1")
+
+    assert len(declared) == 1, f"declared the topology {len(declared)} times for 3 messages"
+
+
+def test_a_vanished_topology_is_rebuilt_and_the_message_retried(db, monkeypatch):
+    from pika.exceptions import UnroutableError
+
+    from orders import messaging
+    from orders.models import OrderOutbox
+
+    channels = []
+    monkeypatch.setattr(messaging, "connect", lambda: _FakeConnection(channels))
+    calls = {"n": 0}
+
+    def flaky(channel, exchange, routing_key, event_type, payload, headers):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise UnroutableError([])
+
+    monkeypatch.setattr(messaging, "publish_message", flaky)
+    _pending_rows(1)
+
+    _relay_with(monkeypatch, lambda: _FakeConnection(channels))._drain("w1")
+
+    assert calls["n"] == 2, "the publisher did not rebuild its channel and retry"
+    assert OrderOutbox.objects.get().status == OrderOutbox.Status.PUBLISHED
+
+
+def test_a_publish_that_never_confirms_leaves_the_row_pending(db, monkeypatch):
+    from pika.exceptions import UnroutableError
+
+    from orders import messaging
+    from orders.models import OrderOutbox
+
+    channels = []
+    monkeypatch.setattr(messaging, "connect", lambda: _FakeConnection(channels))
+
+    def always_unroutable(*args, **kwargs):
+        raise UnroutableError([])
+
+    monkeypatch.setattr(messaging, "publish_message", always_unroutable)
+    _pending_rows(1)
+
+    assert _relay_with(monkeypatch, lambda: _FakeConnection(channels))._drain("w1") == 1
+
+    row = OrderOutbox.objects.get()
+    assert row.status == OrderOutbox.Status.PENDING
+    assert row.attempts == 1 and row.next_attempt_at is not None

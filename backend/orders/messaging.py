@@ -14,6 +14,7 @@ import json
 
 import pika
 from django.conf import settings
+from pika.exceptions import AMQPError, ChannelClosedByBroker, UnroutableError
 
 EXCHANGE = "orders"
 DLX = "orders.dlx"
@@ -60,20 +61,45 @@ def converge_legacy_binding(channel) -> None:
     channel.queue_unbind(queue=OPS_QUEUE, exchange=EXCHANGE, routing_key="order.*")
 
 
-def publish(routing_key: str, event_type: str, payload: dict, headers: dict) -> None:
-    """Publish one event, waiting for a broker confirm.
+class Publisher:
+    """one broker connection for the life of a relay process
 
-    Raises (UnroutableError/NackError/connection errors) if the message is not
-    confirmed, so the caller keeps the outbox row pending for retry.
+    the topology is declared when a channel is opened, not per message. a publish is retried once
+    after rebuilding the channel, so a topology that disappeared under a running relay is repaired
+    without paying for a declaration on every message. anything still unconfirmed is raised, and
+    the caller keeps the outbox row pending
     """
-    conn = connect()
-    try:
-        channel = conn.channel()
+
+    def __init__(self) -> None:
+        self._conn = None
+        self._chan = None
+
+    def publish(self, routing_key: str, event_type: str, payload: dict, headers: dict) -> None:
+        try:
+            publish_message(self._channel(), EXCHANGE, routing_key, event_type, payload, headers)
+        except (UnroutableError, ChannelClosedByBroker):
+            self.close()
+            publish_message(self._channel(), EXCHANGE, routing_key, event_type, payload, headers)
+
+    def close(self) -> None:
+        self._chan = None
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except AMQPError:
+                pass
+        self._conn = None
+
+    def _channel(self):
+        if self._chan is not None and self._chan.is_open:
+            return self._chan
+        if self._conn is None or not self._conn.is_open:
+            self._conn = connect()
+        channel = self._conn.channel()
         declare_topology(channel)
         channel.confirm_delivery()
-        publish_message(channel, EXCHANGE, routing_key, event_type, payload, headers)
-    finally:
-        conn.close()
+        self._chan = channel
+        return channel
 
 
 def publish_message(channel, exchange, routing_key, event_type, payload, headers) -> None:

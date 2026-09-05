@@ -47,6 +47,10 @@ def _headers(row: OrderOutbox) -> dict:
 class Command(BaseCommand):
     help = "Leased at-least-once outbox relay: publishes pending order events to RabbitMQ."
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._publisher = messaging.Publisher()
+
     def add_arguments(self, parser) -> None:
         parser.add_argument("--loop", action="store_true")
         parser.add_argument("--interval", type=float, default=1.0)
@@ -63,16 +67,20 @@ class Command(BaseCommand):
 
         self._converge_topology()
 
-        if options["loop"]:
-            self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
-            while True:
-                self._drain(worker_id, gauge)
-                time.sleep(options["interval"])
-        else:
-            self.stdout.write(self.style.SUCCESS(f"published {self._drain(worker_id, gauge)} event(s)"))
+        try:
+            if options["loop"]:
+                self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
+                while True:
+                    self._drain(worker_id, gauge)
+                    time.sleep(options["interval"])
+            else:
+                self.stdout.write(
+                    self.style.SUCCESS(f"published {self._drain(worker_id, gauge)} event(s)")
+                )
+        finally:
+            self._publisher.close()
 
     def _converge_topology(self) -> None:
-        # the sole publisher, so this is where a stale binding gets cleaned up once per start
         conn = messaging.connect()
         try:
             channel = conn.channel()
@@ -117,7 +125,7 @@ class Command(BaseCommand):
     def _publish_one(self, worker_id: str, row: OrderOutbox) -> None:
         now = timezone.now()
         try:
-            messaging.publish(row.routing_key, row.event_type, row.payload, _headers(row))
+            self._publisher.publish(row.routing_key, row.event_type, row.payload, _headers(row))
         except Exception as exc:  # broker down / unconfirmed -> keep pending, backoff
             attempts = row.attempts + 1
             OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id, locked_until__gte=now).update(
