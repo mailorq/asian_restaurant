@@ -2,8 +2,8 @@
 # the reproducible lock for pip-based images and CI. Regenerate after upgrades.
 
 # Web framework / API
-Django==5.2.16
-django-ninja==1.6.2
+Django==5.2.17
+django-ninja==1.7.0
 pydantic==2.13.5
 
 # Database
@@ -16,7 +16,7 @@ django-environ==0.14.0
 redis==8.0.1
 
 # Order-event messaging
-pika==1.4.1
+pika==1.4.4
 
 # Application servers
 gunicorn==26.0.0
@@ -33,4 +33,4 @@ phonenumbers==9.0.34
 Pillow==12.3.0
 
 # Staff JWT issuance (Identity)
-PyJWT[crypto]==2.10.1
+PyJWT[crypto]==2.13.0
