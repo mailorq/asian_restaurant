@@ -16,6 +16,8 @@ class OrderOutbox(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "В очереди"
         PUBLISHED = "published", "Отправлено"
+        # only an operator sets this; the relay retries a failed row forever
+        FAILED = "failed", "Снято оператором"
 
     event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     aggregate_id = models.CharField(max_length=64, db_index=True)

@@ -31,6 +31,7 @@ BATCH = 50
 LEASE_SECONDS = 60
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 300
+STUCK_ATTEMPTS = 12
 
 
 def _backoff_seconds(attempts: int) -> float:
@@ -111,10 +112,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options) -> None:
         worker_id = f"{socket.gethostname()}:{os.getpid()}"
-        gauge = None
+        gauge = stuck_gauge = None
         if options["metrics_port"] and start_http_server is not None:
             start_http_server(options["metrics_port"])
             gauge = Gauge("outbox_oldest_pending_age_seconds", "age of the oldest pending outbox event")
+            stuck_gauge = Gauge("outbox_stuck_rows", "pending outbox rows past their attempt threshold")
 
         self._converge_topology()
 
@@ -122,11 +124,13 @@ class Command(BaseCommand):
             if options["loop"]:
                 self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
                 while True:
-                    self._drain(worker_id, gauge)
+                    self._drain(worker_id, gauge, stuck_gauge)
                     time.sleep(options["interval"])
             else:
                 self.stdout.write(
-                    self.style.SUCCESS(f"published {self._drain(worker_id, gauge)} event(s)")
+                    self.style.SUCCESS(
+                        f"published {self._drain(worker_id, gauge, stuck_gauge)} event(s)"
+                    )
                 )
         finally:
             self._publisher.close()
@@ -165,18 +169,21 @@ class Command(BaseCommand):
                     row.lease_token, row.locked_until, row.locked_by = token, locked_until, worker_id
         return rows
 
-    def _drain(self, worker_id: str, gauge=None) -> int:
+    def _drain(self, worker_id: str, gauge=None, stuck_gauge=None) -> int:
         rows = self._claim(worker_id)
         for row in rows:
             self._publish_one(worker_id, row)
+        pending = OrderOutbox.objects.filter(status=OrderOutbox.Status.PENDING)
         if gauge is not None:
             oldest = (
-                OrderOutbox.objects.filter(status=OrderOutbox.Status.PENDING)
+                pending.filter(attempts__lt=STUCK_ATTEMPTS)
                 .order_by("created_at")
                 .values_list("created_at", flat=True)
                 .first()
             )
             gauge.set((timezone.now() - oldest).total_seconds() if oldest else 0.0)
+        if stuck_gauge is not None:
+            stuck_gauge.set(pending.filter(attempts__gte=STUCK_ATTEMPTS).count())
         return len(rows)
 
     def _publish_one(self, worker_id: str, row: OrderOutbox) -> None:

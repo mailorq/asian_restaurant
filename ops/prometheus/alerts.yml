@@ -33,7 +33,18 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "storefront events are not leaving the outbox"
-          description: "oldest unsent event is {{ $value }}s old; projections and the command outcome path are stalled."
+          description: "oldest unsent event is {{ $value }}s old, counting only rows still worth retrying; projections and the command outcome path are stalled."
+
+      - alert: StorefrontOutboxRowStuck
+        # the relay never drops a domain event, so this row retries forever. it is excluded from
+        # the backlog age on purpose: left in, its age alone would hold that alert on and hide
+        # every other pending row behind it
+        expr: outbox_stuck_rows > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "storefront outbox rows are not publishable"
+          description: "{{ $value }} row(s) past their attempt threshold; inspect with `manage.py outbox --list`."
 
       - alert: CommandConsumerDown
         expr: commands_consumer_connected == 0 or absent(commands_consumer_connected)
