@@ -5,7 +5,7 @@
 
 ## Стек
 
-- **Backend:** Django 5.2, Django Ninja, PostgreSQL 16, Redis 7, RabbitMQ 3.13.
+- **Backend:** Django 5.2, Django Ninja, PostgreSQL 16, Redis 7, RabbitMQ 4.3.
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, TanStack Query, Zustand.
 - **Инфраструктура:** Docker Compose, Prometheus, nginx (раздача SPA и прокси API).
 

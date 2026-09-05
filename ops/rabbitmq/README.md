@@ -41,6 +41,22 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -T \
   rabbitmq bash -s < ops/rabbitmq/provision.sh
 ```
 
+## Upgrading the broker version
+
+4.x validates that a topic permission names an existing exchange, so `commands` is created by
+`provision.sh` before the publisher is scoped to it, and by `definitions.dev.json` in dev. The
+storefront consumer still owns the queues, bindings and dead-letter topology.
+
+Upgrading a live node from 3.13 goes `3.13 -> 4.2 -> 4.3`, and every stable feature flag must be
+enabled before each step:
+
+```bash
+docker compose exec -T -u rabbitmq rabbitmq rabbitmqctl list_feature_flags
+```
+
+A node with a flag left disabled refuses to start on the newer release. Khepri must stay off on
+3.13: a 3.13 node with Khepri enabled cannot be upgraded in place at all, only replaced.
+
 ## Updating an existing broker without data loss
 
 `provision.sh` converges users and permissions in place. To rotate a password on a

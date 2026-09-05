@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:4.3-management-alpine
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
       - ./ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro

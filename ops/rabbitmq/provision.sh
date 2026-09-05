@@ -58,6 +58,9 @@ ctl set_permissions -p operations operations_bridge \
 # command publisher: cannot declare anything and cannot read. Resource write alone would
 # allow any routing key, so the routing key is pinned with a topic permission as well
 ctl set_permissions -p storefront operations_commands '^$' '^commands$' '^$'
+# the broker refuses a topic permission for an exchange that does not exist, so the exchange is
+# provisioned here; the publisher still holds configure='^$' and cannot create or repair it
+rabbitmqadmin --username "$RABBITMQ_ADMIN_USER" --password "$RABBITMQ_ADMIN_PASSWORD"   --vhost storefront declare exchange --name commands --type topic --durable true
 # converge, do not merge: a topic permission left over from an older layout would still grant
 # its routing keys
 ctl clear_topic_permissions -p storefront operations_commands 2>/dev/null || true

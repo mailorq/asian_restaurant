@@ -47,7 +47,7 @@ services:
   # explicit deployment step: run once (idempotent) to create vhosts/users/permissions
   #   docker compose -f compose.yaml -f compose.prod.yaml run --rm rabbitmq-provision
   rabbitmq-provision:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:4.3-management-alpine
     profiles: ["provision"]
     hostname: rabbitmq-provision
     depends_on:

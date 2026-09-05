@@ -38,7 +38,7 @@ jobs:
           --health-retries 5
       rabbitmq:
         # guest is loopback-only, and a health probe run as root writes an .erlang.cookie the server cannot read; the transport test waits for the port itself
-        image: rabbitmq:3.13-management-alpine
+        image: rabbitmq:4.3-management-alpine
         env:
           RABBITMQ_DEFAULT_USER: ci
           RABBITMQ_DEFAULT_PASS: ci
@@ -153,7 +153,7 @@ jobs:
               -v "$PWD/ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro" \
               -v "$PWD/ops/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro" \
               -v "$PWD/ops/rabbitmq/definitions.dev.json:/etc/rabbitmq/definitions.json:ro" \
-              rabbitmq:3.13-management-alpine
+              rabbitmq:4.3-management-alpine
             for _ in $(seq 1 60); do
               # a dead container has to be reported at once: waiting out the whole timeout
               # only to fail on "is not running" throws the reason away
