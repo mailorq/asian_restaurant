@@ -66,6 +66,9 @@ def create_transition_command(
         raise ValueError("idempotency_key is required")
     if len(key) > IDEMPOTENCY_KEY_MAX:
         raise ValueError(f"idempotency_key must be at most {IDEMPOTENCY_KEY_MAX} characters")
+    if any(ch < " " for ch in key):
+        # a NUL reaches postgres as a DataError, which is the 500 this validation exists to avoid
+        raise ValueError("idempotency_key must not contain control characters")
     target = str(order_id)
     command_id = uuid.uuid4()
     request_event_id = uuid.uuid4()
