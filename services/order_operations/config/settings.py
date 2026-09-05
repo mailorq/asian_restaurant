@@ -53,6 +53,23 @@ IDENTITY_JWKS_URL = env("IDENTITY_JWKS_URL", default="")
 # consumer exposes its own metrics; the API process cannot see the consumer's counters
 METRICS_PORT = env.int("OPERATIONS_METRICS_PORT", default=9101)
 
+LOG_LEVEL = env("OPERATIONS_LOG_LEVEL", default="INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"json": {"()": "operations.jsonlog.JsonFormatter"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "json"}},
+    "root": {"handlers": ["console"], "level": LOG_LEVEL},
+    "loggers": {
+        "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+        "operations": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        # pika reports every connection and channel at INFO, which buries the service log
+        "pika": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+    },
+}
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
 TIME_ZONE = "UTC"
