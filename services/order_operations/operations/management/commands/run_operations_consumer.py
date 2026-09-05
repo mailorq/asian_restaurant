@@ -35,11 +35,13 @@ class Command(BaseCommand):
         messaging.declare_topology(channel)
         channel.confirm_delivery()
         channel.basic_qos(prefetch_count=10)
-        channel.basic_consume(queue=messaging.QUEUE, on_message_callback=self._on_message)
+        for queue in messaging.CONSUMED_QUEUES:
+            channel.basic_consume(queue=queue, on_message_callback=self._on_message)
         consumer_connected.set(1)  # topology declared and consuming; readiness is now true
         self.stdout.write(
             self.style.SUCCESS(
-                f"operations consumer listening on {messaging.QUEUE}; metrics on :{settings.METRICS_PORT}"
+                f"operations consumer listening on {', '.join(messaging.CONSUMED_QUEUES)}; "
+                f"metrics on :{settings.METRICS_PORT}"
             )
         )
         try:

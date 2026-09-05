@@ -45,8 +45,17 @@ of one narrow write grant.
 
 Outcomes travel the **existing** storefront outbox to the `orders` exchange, then the bridge to
 `operations.events`. Routing keys are `order.transition_succeeded` / `order.transition_rejected`,
-chosen to match the bridge's existing `order.*` binding, so the outcome direction needs no new
-exchange, queue or permission. There is no `operations.commands.outcomes` exchange.
+so the outcome direction needs no new exchange or permission. There is no
+`operations.commands.outcomes` exchange.
+
+They do get their own queue on each hop - `operations.bridge.outcomes` on the storefront vhost and
+`operations.outcomes` on the operations vhost - because a command dies at 30s and a shared queue
+puts it behind whatever projection traffic arrived first, a `snapshot.*` backfill included. A
+transition the storefront applied would then be read as `timed_out`. So `order.*` is enumerated as
+`order.created` / `order.status_changed` rather than matched, and both declare passes drop the
+catch-all bindings afterwards: an already running broker converges instead of double-delivering.
+`CommandOutcomeBacklog` fires when anything waits in `operations.outcomes` for a minute, which is
+already past the deadline it would miss.
 
 ## Contract
 Events - `schema_version` 1, shared `Envelope`, aggregate `(order, order_id)`:

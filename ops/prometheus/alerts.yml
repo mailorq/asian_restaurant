@@ -52,6 +52,15 @@ groups:
           summary: "commands are not leaving the operations outbox"
           description: "oldest pending command is {{ $value }}s old; the relay or the storefront topology is down."
 
+      - alert: CommandOutcomeBacklog
+        # outcomes have their own queue precisely so they never wait behind projection traffic; a command dies at 30s, so anything still queued after a minute already missed its deadline
+        expr: rabbitmq_queue_messages{queue="operations.outcomes"} > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "command outcomes are not being consumed"
+          description: "{{ $value }} outcome(s) waiting; commands the storefront already applied are being marked timed_out."
+
       - alert: CommandDispatchAbandoned
         # the row is terminal and nothing will republish it, so the command can only be closed
         # by an outcome that may never come

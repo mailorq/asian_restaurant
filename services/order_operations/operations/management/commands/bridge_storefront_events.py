@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 # publishes operations — so it never shares a connection or credentials with either app.
 STOREFRONT_EXCHANGE = "orders"
 BRIDGE_QUEUE = "operations.bridge.storefront"
+BRIDGE_OUTCOME_QUEUE = "operations.bridge.outcomes"
 BRIDGE_DLX = "operations.bridge.dlx"
 BRIDGE_DLQ = "operations.bridge.storefront.dlq"
 BRIDGE_RETRY_EXCHANGE = "operations.bridge.retry"
@@ -35,6 +36,11 @@ BRIDGE_REQUEUE_EXCHANGE = "operations.bridge.requeue"
 BRIDGE_RETRY_TTL_MS = 5000
 BRIDGE_MAX_RETRIES = 5
 RETRY_HEADER = "x-bridge-retries"
+
+# storefront routing keys, split by queue. outcomes carry the command plane and must not queue behind a projection backfill, so `order.*` is enumerated rather than matched
+LEGACY_KEYS = ("order.created", "order.status_changed", "inventory.*", "identity.*", "snapshot.*")
+OUTCOME_KEYS = ("order.transition_succeeded", "order.transition_rejected")
+CONSUMED_QUEUES = (BRIDGE_QUEUE, BRIDGE_OUTCOME_QUEUE)
 
 LEGACY_TO_VERSIONED = {
     "order.created": EVENT_ORDER_CREATED,
@@ -85,9 +91,20 @@ def declare_bridge_topology(channel) -> None:
     channel.queue_bind(queue=BRIDGE_RETRY_QUEUE, exchange=BRIDGE_RETRY_EXCHANGE, routing_key="#")
 
     channel.queue_declare(queue=BRIDGE_QUEUE, durable=True, arguments={"x-dead-letter-exchange": BRIDGE_DLX})
-    for key in ("order.*", "inventory.*", "identity.*", "snapshot.*"):
+    for key in LEGACY_KEYS:
         channel.queue_bind(queue=BRIDGE_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key=key)
-    channel.queue_bind(queue=BRIDGE_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key="#")
+        channel.queue_bind(queue=BRIDGE_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key=key)
+
+    channel.queue_declare(
+        queue=BRIDGE_OUTCOME_QUEUE, durable=True, arguments={"x-dead-letter-exchange": BRIDGE_DLX}
+    )
+    for key in OUTCOME_KEYS:
+        channel.queue_bind(queue=BRIDGE_OUTCOME_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key=key)
+        channel.queue_bind(queue=BRIDGE_OUTCOME_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key=key)
+
+    # dropped last: a broker already routing outcomes into the legacy queue by catch-all would otherwise deliver every one of them twice
+    channel.queue_unbind(queue=BRIDGE_QUEUE, exchange=STOREFRONT_EXCHANGE, routing_key="order.*")
+    channel.queue_unbind(queue=BRIDGE_QUEUE, exchange=BRIDGE_REQUEUE_EXCHANGE, routing_key="#")
 
 
 def _map_data(event_type: str, legacy: dict) -> dict:
@@ -212,8 +229,11 @@ class Command(BaseCommand):
         declare_bridge_topology(channel)
         self._open_publish()
         channel.basic_qos(prefetch_count=20)
-        channel.basic_consume(queue=BRIDGE_QUEUE, on_message_callback=self._on_message)
-        self.stdout.write(self.style.SUCCESS(f"storefront bridge: {BRIDGE_QUEUE} -> {messaging.EXCHANGE}"))
+        for queue in CONSUMED_QUEUES:
+            channel.basic_consume(queue=queue, on_message_callback=self._on_message)
+        self.stdout.write(
+            self.style.SUCCESS(f"storefront bridge: {', '.join(CONSUMED_QUEUES)} -> {messaging.EXCHANGE}")
+        )
         try:
             channel.start_consuming()
         except KeyboardInterrupt:

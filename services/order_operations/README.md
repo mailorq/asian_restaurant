@@ -44,6 +44,9 @@ publishing, acks the legacy delivery only after the versioned publish is confirm
 sends poison messages to its own DLQ, and delays transient failures through a bounded
 retry queue (`operations.bridge.*`) before giving up to the DLQ. It preserves the
 origin's `occurred_at` and keeps `producer=storefront`, tagging itself in `relayed_by`.
+Transition outcomes ride their own queue on both hops (`operations.bridge.outcomes`,
+`operations.outcomes`): commands expire in 30s, so they must not queue behind a projection
+backfill.
 
 ## Projection version fencing
 
