@@ -24,6 +24,7 @@ from prometheus_client import start_http_server
 from operations import commands as command_service
 from operations import messaging
 from operations.commands import ClaimResult
+from operations.jsonlog import log_context
 from operations.metrics import (
     command_dispatch_total,
     command_outbox_oldest_pending_age_seconds,
@@ -193,6 +194,11 @@ class Command(BaseCommand):
         )
 
     def _publish_one(self, row: OperationsOutbox) -> bool:
+        with log_context(event_id=str(row.event_id), correlation_id=str(row.correlation_id),
+                         causation_id=str(row.causation_id) if row.causation_id else None):
+            return self._publish_held(row)
+
+    def _publish_held(self, row: OperationsOutbox) -> bool:
         envelope = _envelope(row)
         try:
             parse_event(envelope)

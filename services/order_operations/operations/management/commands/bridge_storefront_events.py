@@ -18,6 +18,7 @@ from event_contracts import (
 )
 
 from operations import messaging
+from operations.jsonlog import log_context
 
 log = logging.getLogger(__name__)
 
@@ -252,6 +253,16 @@ class Command(BaseCommand):
         self._publish_conn = None
 
     def _on_message(self, channel, method, properties, body) -> None:
+        headers = properties.headers or {}
+        with log_context(
+            message_id=properties.message_id,
+            event_id=headers.get("event_id"),
+            correlation_id=headers.get("correlation_id") or properties.correlation_id,
+            causation_id=headers.get("causation_id"),
+        ):
+            self._relay(channel, method, properties, body)
+
+    def _relay(self, channel, method, properties, body) -> None:
         event_type = LEGACY_TO_VERSIONED.get(properties.type)
         if event_type is None:
             channel.basic_nack(method.delivery_tag, requeue=False)

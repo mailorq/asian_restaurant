@@ -1,5 +1,7 @@
 """log formatter for the operations service"""
 
+import contextlib
+import contextvars
 import datetime as dt
 import json
 import logging
@@ -13,6 +15,19 @@ _RESERVED = frozenset({
 })
 
 
+_bound: contextvars.ContextVar[dict | None] = contextvars.ContextVar("log_context", default=None)
+
+
+@contextlib.contextmanager
+def log_context(**fields):
+    """binds identifiers to every record emitted while the block runs, however deep the caller"""
+    token = _bound.set({**(_bound.get() or {}), **{k: v for k, v in fields.items() if v is not None}})
+    try:
+        yield
+    finally:
+        _bound.reset(token)
+
+
 class JsonFormatter(logging.Formatter):
     """renders one JSON object per record, carrying every field passed through `extra`"""
 
@@ -23,6 +38,8 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        payload.update(_bound.get() or {})
+        # the call site is more specific than the surrounding context, so it wins
         payload.update(
             {k: v for k, v in record.__dict__.items()
              if k not in _RESERVED and not k.startswith("_")}

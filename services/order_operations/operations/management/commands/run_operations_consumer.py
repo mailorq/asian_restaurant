@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from operations import dispatch, messaging, projection
 from operations.commands import OutcomeMismatch
+from operations.jsonlog import log_context
 from operations.metrics import consumer_connected, projection_events
 
 log = logging.getLogger(__name__)
@@ -54,9 +55,20 @@ class Command(BaseCommand):
         try:
             envelope, data = parse_event(json.loads(body))
         except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType):
-            log.exception("operations poison message -> DLQ")
+            log.exception("operations poison message -> DLQ",
+                          extra={"message_id": getattr(properties, "message_id", None)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
+
+        with log_context(
+            event_id=str(envelope.event_id),
+            correlation_id=str(envelope.correlation_id),
+            causation_id=str(envelope.causation_id) if envelope.causation_id else None,
+            event_type=envelope.event_type,
+        ):
+            self._apply(channel, method, properties, body, envelope, data, retries)
+
+    def _apply(self, channel, method, properties, body, envelope, data, retries: int) -> None:
         try:
             dispatch.handle(envelope, data)
         except projection.ProjectionConflict as exc:
