@@ -26,6 +26,15 @@ groups:
           summary: "poison commands in {{ $labels.queue }}"
           description: "{{ $value }} message(s) in {{ $labels.queue }}, order transitions are not being applied."
 
+      - alert: StorefrontOutboxBacklog
+        # the publish backoff caps at 300s, so anything past twice that is a backlog that is not draining rather than a retry in flight
+        expr: outbox_oldest_pending_age_seconds > 600
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "storefront events are not leaving the outbox"
+          description: "oldest unsent event is {{ $value }}s old; projections and the command outcome path are stalled."
+
       - alert: CommandConsumerDown
         expr: commands_consumer_connected == 0 or absent(commands_consumer_connected)
         for: 1m

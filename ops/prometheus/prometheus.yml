@@ -18,6 +18,11 @@ scrape_configs:
     static_configs:
       - targets: ["operations-consumer:9101"]
 
+  - job_name: relay
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["relay:9104"]
+
   - job_name: commands-consumer
     metrics_path: /metrics
     static_configs:

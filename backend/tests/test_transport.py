@@ -460,3 +460,18 @@ def test_legacy_events_keep_their_bare_payload(monkeypatch):
     sent = _captured_body(monkeypatch, row)
 
     assert sent["payload"] == row.payload
+
+
+def test_the_relay_reports_the_age_of_the_oldest_unsent_event(monkeypatch):
+    from prometheus_client import CollectorRegistry, Gauge
+
+    row = _outbox()
+    OrderOutbox.objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(seconds=120))
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock(side_effect=Exception("broker down")))
+    gauge = Gauge("probe_outbox_age_seconds", "probe", registry=CollectorRegistry())
+
+    relay._drain("w1", gauge)
+
+    reported = gauge.collect()[0].samples[0].value
+    assert 110 <= reported <= 130, f"the backlog age reported as {reported}"

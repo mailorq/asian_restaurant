@@ -80,6 +80,10 @@ services:
       target: prod
     env_file: [.env]
     command: python manage.py publish_outbox --loop
+    environment:
+      OUTBOX_METRICS_PORT: "9104"
+    expose:
+      - "9104"
     depends_on:
       db:
         condition: service_healthy
