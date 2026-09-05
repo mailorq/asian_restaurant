@@ -25,8 +25,10 @@ are ignored by older consumers; breaking changes require a new event version.
 
 | Process | Command |
 |---|---|
-| API (read-only, shadow) | `python manage.py runserver` → `/ops-api/` |
+| API (reads projections, issues transition commands) | `python manage.py runserver` → `/ops-api/` |
 | Projection consumer | `python manage.py run_operations_consumer` |
+| Command relay | `python manage.py publish_commands --loop` |
+| Command sweeper (manual recovery) | `python manage.py sweep_commands` |
 | Legacy bridge (temporary) | `python manage.py bridge_storefront_events` |
 | Test event (verification) | `python manage.py publish_test_event --order-id N --customer-id M` |
 
@@ -95,8 +97,11 @@ exchange their session for a short-lived, RS256-signed JWT (`sub`, `roles`,
 `authz_version`, `jti`, `exp`, `iss=identity`, `aud=operations`) at
 `POST /api/auth/employee-token`; `EmployeeJWTAuth` verifies it against Identity's
 JWKS (`GET /api/auth/jwks`) and requires the `restaurant_employee` role. The actor
-is taken from the verified token, never from a browser-supplied id. `/ops-api/*` is
-staff-only; only `/health` is open. Revocation is enforced ahead of TTL: every request
+is taken from the verified token, never from a browser-supplied id: an `actor_id` in a request
+body is ignored. `/ops-api/*` is staff-only; only `/health` is open, and the OpenAPI schema is served
+outside production only. A transition is requested
+with `POST /ops-api/orders/{order_id}/transition-commands` carrying an `Idempotency-Key` header,
+and its outcome is read back from `GET /ops-api/commands/{command_id}`, scoped to its author. Revocation is enforced ahead of TTL: every request
 also requires the local `EmployeeAuthorization` projection to match the token's
 `authz_version` with an active role and user, failing closed on an unknown, stale, or
 unavailable projection (see `ops/identity/README.md` for the propagation SLO).

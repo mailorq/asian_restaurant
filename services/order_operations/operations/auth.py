@@ -48,5 +48,7 @@ class EmployeeJWTAuth(HttpBearer):
             return None
         if not _authorized(claims):
             return None
-        request.actor_id = claims.get("sub")
+        # typed here so no handler re-parses the token; _authorized already proved sub is an int
+        request.actor_id = int(claims["sub"])
+        request.actor_authz_version = claims["authz_version"]
         return claims

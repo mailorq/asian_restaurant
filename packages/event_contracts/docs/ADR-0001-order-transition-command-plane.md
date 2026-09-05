@@ -193,8 +193,6 @@ parse -> single transaction.atomic():
   UI must render them as "delivery unconfirmed", never as "nothing happened".
 
 ## API
-Not implemented yet: the transport is in place, but commands are still created through the
-service layer only. The shape below is the agreed contract for the next step.
 ```
 POST /ops-api/orders/{order_id}/transition-commands     Idempotency-Key: <uuid>
      body: expected_status, target_status, reason
@@ -203,6 +201,13 @@ POST /ops-api/orders/{order_id}/transition-commands     Idempotency-Key: <uuid>
 GET  /ops-api/commands/{command_id}                      author-scoped for now
 ```
 The idempotency key travels as a **header**, not a body field.
+
+The actor is `int(sub)` of the verified token, typed once at the authentication boundary; no
+handler re-parses the token and a body field named `actor_id` is ignored. Creation does not check
+the local `OperationOrder` projection: it is a read model that can lag, and the storefront is the
+authority on whether the order exists, so an unknown order comes back as an `order_not_found`
+outcome rather than a 404 at request time. The read endpoint is scoped to the author, so another
+employee's command answers 404 rather than confirming it exists.
 
 ## Legacy policy
 `POST /api/employee/orders/{id}/transition` is marked legacy for the migration window; it is not
