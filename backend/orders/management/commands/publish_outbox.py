@@ -9,6 +9,10 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from event_contracts import (
+    EVENT_ORDER_TRANSITION_REJECTED,
+    EVENT_ORDER_TRANSITION_SUCCEEDED,
+)
 
 from orders import messaging
 from orders.models import OrderOutbox
@@ -29,6 +33,33 @@ def _backoff_seconds(attempts: int) -> float:
     """Exponential backoff (capped) with additive jitter."""
     base = min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * (2 ** min(attempts, 10)))
     return base + random.uniform(0, base * 0.25)
+
+
+# events the storefront already emits in contract shape; their body carries the whole envelope, so nothing downstream has to rebuild it from headers
+ENVELOPE_EVENTS = frozenset({EVENT_ORDER_TRANSITION_SUCCEEDED, EVENT_ORDER_TRANSITION_REJECTED})
+AGGREGATE_TYPE = "order"
+PRODUCER = "storefront"
+
+
+def _body(row: OrderOutbox) -> dict:
+    """assembled from typed columns; the stored payload is only the contract `data`"""
+    if row.event_type not in ENVELOPE_EVENTS:
+        return row.payload
+    return {
+        "event_id": str(row.event_id),
+        "event_type": row.event_type,
+        "schema_version": row.schema_version,
+        "occurred_at": row.created_at.isoformat(),
+        "producer": PRODUCER,
+        "aggregate": {
+            "type": AGGREGATE_TYPE,
+            "id": row.aggregate_id,
+            "version": row.aggregate_version,
+        },
+        "correlation_id": str(row.correlation_id),
+        "causation_id": str(row.causation_id) if row.causation_id else None,
+        "data": row.payload,
+    }
 
 
 def _held(row: OrderOutbox) -> dict | None:
@@ -150,7 +181,7 @@ class Command(BaseCommand):
             return
         now = timezone.now()
         try:
-            self._publisher.publish(row.routing_key, row.event_type, row.payload, _headers(row))
+            self._publisher.publish(row.routing_key, row.event_type, _body(row), _headers(row))
         except Exception as exc:  # broker down / unconfirmed -> keep pending, backoff
             attempts = row.attempts + 1
             OrderOutbox.objects.filter(**held).update(

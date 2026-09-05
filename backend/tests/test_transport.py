@@ -408,3 +408,55 @@ def test_a_row_with_a_live_lock_but_no_token_is_never_completed(monkeypatch):
 
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PENDING
+
+
+def _outcome_row():
+    import uuid as _uuid
+
+    return OrderOutbox.objects.create(
+        event_type="orders.transition.succeeded.v1",
+        routing_key="order.transition_succeeded",
+        aggregate_id="42",
+        aggregate_version=2,
+        causation_id=_uuid.uuid4(),
+        payload={"command_id": str(_uuid.uuid4()), "order_id": 42,
+                 "from_status": "created", "status": "confirmed"},
+    )
+
+
+def _captured_body(monkeypatch, row):
+    sent = {}
+
+    def publish(routing_key, event_type, payload, headers):
+        sent["routing_key"] = routing_key
+        sent["payload"] = payload
+
+    relay = Relay()
+    [claimed] = relay._claim("w1")
+    monkeypatch.setattr(relay._publisher, "publish", publish)
+    relay._publish_one("w1", claimed)
+    return sent
+
+
+def test_outcome_events_are_published_as_a_contract_envelope(monkeypatch):
+    from event_contracts import parse_event
+
+    row = _outcome_row()
+
+    sent = _captured_body(monkeypatch, row)
+
+    envelope, data = parse_event(sent["payload"])
+    assert str(envelope.event_id) == str(row.event_id)
+    assert str(envelope.correlation_id) == str(row.correlation_id)
+    assert str(envelope.causation_id) == str(row.causation_id)
+    assert envelope.producer == "storefront"
+    assert envelope.aggregate.id == "42" and envelope.aggregate.version == 2
+    assert str(data.order_id) == "42"
+
+
+def test_legacy_events_keep_their_bare_payload(monkeypatch):
+    row = _outbox()
+
+    sent = _captured_body(monkeypatch, row)
+
+    assert sent["payload"] == row.payload
