@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import socket
@@ -14,6 +15,7 @@ from event_contracts import (
     EVENT_ORDER_TRANSITION_SUCCEEDED,
 )
 
+from config.jsonlog import log_context
 from orders import messaging
 from orders.models import OrderOutbox
 
@@ -22,6 +24,8 @@ try:
 except ImportError:  # pragma: no cover
     Gauge = None
     start_http_server = None
+
+log = logging.getLogger(__name__)
 
 BATCH = 50
 LEASE_SECONDS = 60
@@ -176,6 +180,15 @@ class Command(BaseCommand):
         return len(rows)
 
     def _publish_one(self, worker_id: str, row: OrderOutbox) -> None:
+        with log_context(
+            event_id=str(row.event_id),
+            correlation_id=str(row.correlation_id),
+            causation_id=str(row.causation_id) if row.causation_id else None,
+            event_type=row.event_type,
+        ):
+            self._publish_held(worker_id, row)
+
+    def _publish_held(self, worker_id: str, row: OrderOutbox) -> None:
         held = _held(row)
         if held is None:
             return
@@ -192,7 +205,10 @@ class Command(BaseCommand):
                 locked_by="",
                 lease_token=None,
             )
-            self.stderr.write(f"outbox {row.pk} publish failed (attempt {attempts}): {exc}")
+            log.exception(
+                "outbox publish failed",
+                extra={"outbox_id": row.pk, "routing_key": row.routing_key, "attempts": attempts},
+            )
             return
         OrderOutbox.objects.filter(**held).update(
             status=OrderOutbox.Status.PUBLISHED,

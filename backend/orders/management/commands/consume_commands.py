@@ -15,6 +15,7 @@ from django.db import DatabaseError, InterfaceError, connections
 from event_contracts import EVENT_ORDER_TRANSITION_REQUESTED, UnknownEventType, parse_event
 from pydantic import ValidationError
 
+from config.jsonlog import log_context
 from config.metrics import commands_applied_total, commands_consumer_connected
 from orders import command_messaging as topology
 from orders import messaging
@@ -77,15 +78,23 @@ class Command(BaseCommand):
         try:
             envelope, data = parse_event(json.loads(body))
         except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType):
-            log.exception("command poison message -> DLQ")
+            log.exception("command poison message -> DLQ",
+                          extra={"message_id": getattr(properties, "message_id", None)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
+        with log_context(
+            event_id=str(envelope.event_id),
+            correlation_id=str(envelope.correlation_id),
+            causation_id=str(envelope.causation_id) if envelope.causation_id else None,
+            event_type=envelope.event_type,
+            command_id=str(data.command_id),
+        ):
+            self._apply(channel, method, properties, body, envelope, data, retries)
+
+    def _apply(self, channel, method, properties, body, envelope, data, retries: int) -> None:
         if envelope.event_type != EVENT_ORDER_TRANSITION_REQUESTED:
             # the queue binds one routing key, so anything else here is a topology mistake
-            log.warning(
-                "unexpected event on the command queue -> DLQ",
-                extra={"event_id": str(envelope.event_id), "event_type": envelope.event_type},
-            )
+            log.warning("unexpected event on the command queue -> DLQ")
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         try:
@@ -97,10 +106,7 @@ class Command(BaseCommand):
             self._retry(channel, method, properties, body, retries)
             return
         except Exception:
-            log.exception(
-                "command application failed -> DLQ",
-                extra={"command_id": str(data.command_id), "order_id": data.order_id},
-            )
+            log.exception("command application failed -> DLQ", extra={"order_id": data.order_id})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         commands_applied_total.labels(_label(outcome)).inc()

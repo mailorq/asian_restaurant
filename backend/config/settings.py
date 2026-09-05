@@ -177,15 +177,12 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "verbose": {
-            "format": "{asctime} [{levelname}] {name}: {message}",
-            "style": "{",
-        },
+        "json": {"()": "config.jsonlog.JsonFormatter"},
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "json",
         },
     },
     "root": {"handlers": ["console"], "level": LOG_LEVEL},
@@ -193,5 +190,7 @@ LOGGING = {
         "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
         "asian_restaurant": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        # one INFO block per connection and channel, which buries the records that matter
+        "pika": {"handlers": ["console"], "level": "WARNING", "propagate": False},
     },
 }
