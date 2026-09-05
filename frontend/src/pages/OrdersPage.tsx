@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Icon } from "../components/Icon";
 import { useUI } from "../stores/ui";
 import { useAuth } from "../stores/auth";
@@ -8,7 +9,12 @@ export function OrdersPage() {
   const openModal = useUI((s) => s.openModal);
   const navigate = useUI((s) => s.navigate);
   const user = useAuth((s) => s.user);
-  const { data: orders, isLoading, isError, refetch } = useOrders(Boolean(user));
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError, refetch } = useOrders(Boolean(user), page);
+  const orders = data?.items;
+  const total = data?.total ?? 0;
+  const pageSize = data?.page_size ?? 20;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
@@ -90,6 +96,33 @@ export function OrdersPage() {
             );
           })}
         </ul>
+      )}
+
+      {total > pageSize && (
+        <div className="mt-5 flex items-center justify-between text-sm text-muted">
+          <span>Всего: {total}</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Назад"
+            >
+              <Icon name="arrowLeft" size={16} />
+            </button>
+            <span className="tnum">
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Вперёд"
+            >
+              <Icon name="arrowRight" size={16} />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

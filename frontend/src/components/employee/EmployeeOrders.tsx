@@ -26,7 +26,12 @@ const FILTERS: { value: OrderStatus | ""; label: string }[] = [
 
 export function EmployeeOrders() {
   const [filter, setFilter] = useState<OrderStatus | "">("");
-  const { data: orders, isLoading, isError, refetch } = useEmployeeOrders(filter);
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError, refetch } = useEmployeeOrders(filter, page);
+  const orders = data?.items;
+  const total = data?.total ?? 0;
+  const pageSize = data?.page_size ?? 20;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const transition = useTransitionOrder();
   const notify = useToast((s) => s.notify);
 
@@ -46,7 +51,10 @@ export function EmployeeOrders() {
         {FILTERS.map((f) => (
           <button
             key={f.value || "all"}
-            onClick={() => setFilter(f.value)}
+            onClick={() => {
+              setFilter(f.value);
+              setPage(1);
+            }}
             className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
               filter === f.value
                 ? "bg-primary text-primary-contrast"
@@ -128,6 +136,33 @@ export function EmployeeOrders() {
             );
           })}
         </ul>
+      )}
+
+      {total > pageSize && (
+        <div className="mt-5 flex items-center justify-between text-sm text-muted">
+          <span>Всего: {total}</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Назад"
+            >
+              <Icon name="arrowLeft" size={16} />
+            </button>
+            <span className="tnum">
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Вперёд"
+            >
+              <Icon name="arrowRight" size={16} />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

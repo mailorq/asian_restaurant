@@ -76,10 +76,17 @@ export interface AddressVerification {
   lng: number | null;
 }
 
-export function useOrders(enabled = true) {
+export interface PagedOrders {
+  items: Order[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export function useOrders(enabled = true, page = 1, pageSize = 20) {
   return useQuery({
-    queryKey: ["orders"],
-    queryFn: () => api<Order[]>("/orders"),
+    queryKey: ["orders", page, pageSize],
+    queryFn: () => api<PagedOrders>(`/orders?page=${page}&page_size=${pageSize}`),
     enabled,
   });
 }

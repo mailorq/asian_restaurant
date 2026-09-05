@@ -78,3 +78,10 @@ class CheckoutErrorOut(Schema):
     code: str
     message: str
     items: list[dict] = []
+
+
+class PagedOrders(Schema):
+    items: list[OrderOut]
+    total: int
+    page: int
+    page_size: int

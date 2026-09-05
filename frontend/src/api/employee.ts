@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
-import type { Order, OrderStatus } from "./orders";
+import type { Order, OrderStatus, PagedOrders } from "./orders";
 import type { Category } from "../lib/menu";
 
 export interface InventoryItem {
@@ -48,10 +48,13 @@ export interface UserDetail {
 }
 
 // --- orders ---------------------------------------------------------------
-export function useEmployeeOrders(status: OrderStatus | "") {
+export function useEmployeeOrders(status: OrderStatus | "", page = 1, pageSize = 20) {
   return useQuery({
-    queryKey: ["employee", "orders", status || "all"],
-    queryFn: () => api<Order[]>(`/employee/orders${status ? `?status=${status}` : ""}`),
+    queryKey: ["employee", "orders", status || "all", page, pageSize],
+    queryFn: () =>
+      api<PagedOrders>(
+        `/employee/orders?page=${page}&page_size=${pageSize}${status ? `&status=${status}` : ""}`,
+      ),
     refetchInterval: 15_000, // polling until SSE (Stage 5)
   });
 }

@@ -3,6 +3,7 @@ from ninja.errors import HttpError
 from ninja.security import django_auth
 
 from common.ratelimit import rate_limit
+from config.pagination import DEFAULT_PAGE_SIZE, paginate
 from orders import geocode as geo
 from orders import service
 from orders.models import DeliveryAddress, Order
@@ -13,6 +14,7 @@ from orders.schemas import (
     CheckoutIn,
     LastAddressOut,
     OrderOut,
+    PagedOrders,
 )
 
 router = Router(tags=["orders"], auth=django_auth)
@@ -63,9 +65,10 @@ def checkout(request, data: CheckoutIn):
     return Status(200, _with_relations(Order.objects).get(pk=order.pk))
 
 
-@router.get("", response=list[OrderOut])
-def list_orders(request):
-    return _with_relations(Order.objects.filter(user=request.auth))
+@router.get("", response=PagedOrders)
+def list_orders(request, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE):
+    qs = _with_relations(Order.objects.filter(user=request.auth)).order_by("-created_at", "-id")
+    return paginate(qs, page, page_size)
 
 
 @router.get("/{order_id}", response=OrderOut)

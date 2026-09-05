@@ -185,7 +185,7 @@ def test_order_list_and_detail(client, user, make_product, seed_cart):
 
     listing = client.get("/api/orders")
     assert listing.status_code == 200
-    assert [o["id"] for o in listing.json()] == [order_id]
+    assert [o["id"] for o in listing.json()["items"]] == [order_id]
 
     detail = client.get(f"/api/orders/{order_id}")
     assert detail.status_code == 200

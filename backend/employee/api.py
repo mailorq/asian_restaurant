@@ -4,6 +4,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
+from config.pagination import DEFAULT_PAGE_SIZE, paginate
 from employee import service
 from employee.permissions import employee_required, superuser_required
 from employee.schemas import (
@@ -20,7 +21,7 @@ from menu import inventory as inventory_service
 from menu.models import Product, StockAdjustment
 from orders import service as order_service
 from orders.models import ACTIVE_ORDER_STATUSES, Order
-from orders.schemas import OrderOut
+from orders.schemas import OrderOut, PagedOrders
 
 router = Router(tags=["employee"], auth=django_auth)
 
@@ -29,14 +30,15 @@ def _orders_qs():
     return Order.objects.select_related("delivery_address").prefetch_related("items")
 
 
-# --- orders ---------------------------------------------------------------
-@router.get("/orders", response=list[OrderOut])
+# orders
+@router.get("/orders", response=PagedOrders)
 @employee_required
-def list_orders(request, status: str | None = None):
-    qs = _orders_qs().order_by("-created_at")
+def list_orders(request, status: str | None = None, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE):
+    # id breaks ties so a page boundary cannot repeat or skip a row
+    qs = _orders_qs().order_by("-created_at", "-id")
     if status:
         qs = qs.filter(status=status)
-    return qs
+    return paginate(qs, page, page_size)
 
 
 @router.get("/orders/{order_id}", response=OrderOut)
@@ -63,7 +65,7 @@ def transition_order(request, order_id: int, data: TransitionIn):
     return _orders_qs().get(pk=order.pk)
 
 
-# --- inventory ------------------------------------------------------------
+# inventory
 @router.get("/inventory", response=list[InventoryItemOut])
 @employee_required
 def inventory(request, search: str | None = None):
@@ -88,7 +90,7 @@ def stock_adjustments(request, product_id: int):
     return list(StockAdjustment.objects.filter(product_id=product_id).select_related("staff")[:50])
 
 
-# --- users ----------------------------------------------------------------
+# users
 @router.get("/users", response=PagedUsers)
 @employee_required
 def list_users(request, search: str | None = None, page: int = 1, page_size: int = 20):

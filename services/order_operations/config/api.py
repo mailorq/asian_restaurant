@@ -12,6 +12,7 @@ from pydantic import Field, ValidationError
 from operations.auth import EmployeeJWTAuth
 from operations.commands import CommandConflict, create_transition_command
 from operations.models import OperationCommand, OperationOrder
+from operations.pagination import DEFAULT_PAGE_SIZE, paginate
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
 
@@ -41,17 +42,25 @@ class OpsOrderOut(Schema):
     payment_method: str
 
 
+class PagedOrders(Schema):
+    items: list[OpsOrderOut]
+    total: int
+    page: int
+    page_size: int
+
+
 @api.get("/health", response=HealthOut, tags=["ops"], auth=None)
 def health(request) -> dict:
     return {"status": "ok"}
 
 
-@api.get("/orders", response=list[OpsOrderOut], tags=["orders"])
-def list_orders(request, status: str | None = None):
-    qs = OperationOrder.objects.all().order_by("-created_at")
+@api.get("/orders", response=PagedOrders, tags=["orders"])
+def list_orders(request, status: str | None = None, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE):
+    # source_order_id breaks ties so a page boundary cannot repeat or skip a row
+    qs = OperationOrder.objects.all().order_by("-created_at", "-source_order_id")
     if status:
         qs = qs.filter(status=status)
-    return qs
+    return paginate(qs, page, page_size)
 
 
 @api.get("/orders/{source_order_id}", response=OpsOrderOut, tags=["orders"])
