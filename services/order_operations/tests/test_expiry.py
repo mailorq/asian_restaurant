@@ -435,3 +435,31 @@ def test_never_attempted_command_cannot_get_stuck_in_timed_out():
     assert _claim(command)[0] is ClaimResult.EXPIRED
     assert _outbox(command).status == OperationsOutbox.Status.SUPPRESSED
     assert OperationCommand.objects.get(pk=command.pk).status == OperationCommand.Status.REJECTED
+
+
+def _attempted_expired(count: int) -> None:
+    for i in range(count):
+        command, _ = create_transition_command(
+            actor_id=99, actor_authz_version=1, order_id=i + 1, expected_status="created",
+            target_status="confirmed", idempotency_key=f"sweep-{i}",
+        )
+        commands.claim_or_expire(
+            OperationsOutbox.objects.get(command=command).pk, worker="w", lease=LEASE
+        )
+    OperationsOutbox.objects.update(locked_until=None)
+    OperationCommand.objects.update(deadline_at=timezone.now() - timedelta(seconds=1))
+
+
+def test_sweeping_a_batch_costs_a_bounded_number_of_queries_per_command():
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    batch = 5
+    _attempted_expired(batch)
+
+    with CaptureQueriesContext(connection) as queries:
+        swept = commands.sweep_expired()
+
+    assert swept == {"expired": 0, "timed_out": batch}
+    # one shared selection plus a single locking pass per command
+    assert len(queries) <= 2 + 6 * batch, f"{len(queries)} queries for {batch} commands"

@@ -38,6 +38,7 @@ LEASE = timedelta(seconds=60)
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 64
 MAX_ATTEMPTS = 5
+SWEEP_INTERVAL_SECONDS = 5
 AGGREGATE_TYPE = "order"
 
 
@@ -71,6 +72,7 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._connection = None
         self._channel = None
+        self._next_sweep = 0.0
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--loop", action="store_true")
@@ -150,11 +152,19 @@ class Command(BaseCommand):
             .values_list("pk", flat=True)[:BATCH]
         )
 
+    def _sweep_due(self) -> bool:
+        now = time.monotonic()
+        if now < self._next_sweep:
+            return False
+        # jittered so two replicas do not sweep the same rows in lockstep
+        self._next_sweep = now + SWEEP_INTERVAL_SECONDS * random.uniform(0.8, 1.2)
+        return True
+
     def _drain(self, worker_id: str) -> int:
-        swept = command_service.sweep_expired()
-        for result, count in swept.items():
-            if count:
-                command_dispatch_total.labels(result).inc(count)
+        if self._sweep_due():
+            for result, count in command_service.sweep_expired().items():
+                if count:
+                    command_dispatch_total.labels(result).inc(count)
         dispatched = 0
         for row_id in self._eligible():
             result, row = command_service.claim_or_expire(row_id, worker=worker_id, lease=LEASE)

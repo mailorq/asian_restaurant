@@ -382,21 +382,27 @@ def sweep_expired(*, limit: int = 200) -> dict[str, int]:
     a lost outcome leaves the command open forever and timed_out is unreachable in production
     """
     now = timezone.now()
-    pks = list(
+    expiring = list(
         OperationCommand.objects.filter(
             status__in=[OperationCommand.Status.PENDING, OperationCommand.Status.DISPATCHED],
             deadline_at__lte=now,
         )
-        .order_by("deadline_at")
-        .values_list("pk", flat=True)[:limit]
+        .annotate(
+            row_status=F("outbox_event__status"),
+            row_attempted=F("outbox_event__publish_attempted_at"),
+        )
+        .order_by("deadline_at")[:limit]
     )
     swept = {"expired": 0, "timed_out": 0}
-    for pk in pks:
-        command = OperationCommand.objects.filter(pk=pk).first()
-        if command is None:
-            continue
-        if command.status == OperationCommand.Status.PENDING:
-            # only finalises one that provably never reached the network
+    for command in expiring:
+        # the row state selected here only routes the command to one of the two paths; both still
+        # re-read it under the lock, so a state that moved since the selection is resolved there
+        never_sent = (
+            command.status == OperationCommand.Status.PENDING
+            and command.row_attempted is None
+            and command.row_status == OperationsOutbox.Status.PENDING
+        )
+        if never_sent:
             if expire_before_dispatch(command).status == OperationCommand.Status.REJECTED:
                 swept["expired"] += 1
                 continue

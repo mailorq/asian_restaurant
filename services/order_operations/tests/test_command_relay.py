@@ -274,3 +274,18 @@ def test_a_superseded_worker_cannot_abandon_a_row_it_no_longer_holds(monkeypatch
 
     assert commands.abandon_row(stale) is False
     assert _outbox(command).status == OperationsOutbox.Status.PENDING
+
+
+def test_the_relay_does_not_sweep_on_every_cycle(monkeypatch):
+    swept = []
+    monkeypatch.setattr(
+        publish_commands.command_service, "sweep_expired",
+        lambda **kw: swept.append(1) or {"expired": 0, "timed_out": 0},
+    )
+    sent, publish = _recorder()
+    relay = _relay(monkeypatch, publish)
+
+    for _ in range(3):
+        relay._drain(WORKER)
+
+    assert len(swept) == 1, f"the sweeper ran {len(swept)} times in three publish cycles"
