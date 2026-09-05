@@ -35,6 +35,7 @@ class OrderOutbox(models.Model):
     next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
     locked_until = models.DateTimeField(null=True, blank=True)
     locked_by = models.CharField(max_length=64, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True)
     last_error = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     published_at = models.DateTimeField(null=True, blank=True)

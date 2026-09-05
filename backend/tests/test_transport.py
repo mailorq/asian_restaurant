@@ -125,10 +125,11 @@ def _outbox(**kw):
 
 
 def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
-    row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
+    row = _outbox()
     relay = Relay()
+    [claimed] = relay._claim("w1")
     monkeypatch.setattr(relay._publisher, "publish", Mock(side_effect=Exception("broker down")))
-    relay._publish_one("w1", row)
+    relay._publish_one("w1", claimed)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PENDING
     assert row.attempts == 1
@@ -137,10 +138,11 @@ def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
 
 
 def test_relay_success_marks_published(monkeypatch):
-    row = _outbox(locked_by="w1", locked_until=timezone.now() + timedelta(seconds=60))
+    row = _outbox()
     relay = Relay()
+    [claimed] = relay._claim("w1")
     monkeypatch.setattr(relay._publisher, "publish", Mock())
-    relay._publish_one("w1", row)
+    relay._publish_one("w1", claimed)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PUBLISHED
     assert row.published_at is not None
@@ -173,10 +175,12 @@ def test_expired_lease_is_reclaimed_by_second_worker():
 
 def test_publish_not_committed_when_lease_expired(monkeypatch):
     # a slow worker whose lease already expired must not flip status
-    row = _outbox(locked_by="w1", locked_until=timezone.now() - timedelta(seconds=1))
+    row = _outbox()
     relay = Relay()
+    [claimed] = relay._claim("w1")
+    OrderOutbox.objects.filter(pk=row.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
     monkeypatch.setattr(relay._publisher, "publish", Mock())
-    relay._publish_one("w1", row)
+    relay._publish_one("w1", claimed)
     row.refresh_from_db()
     assert row.status == OrderOutbox.Status.PENDING
 
@@ -346,3 +350,61 @@ def test_a_publish_that_never_confirms_leaves_the_row_pending(db, monkeypatch):
     row = OrderOutbox.objects.get()
     assert row.status == OrderOutbox.Status.PENDING
     assert row.attempts == 1 and row.next_attempt_at is not None
+
+
+def test_a_superseded_worker_with_the_same_identity_cannot_publish(monkeypatch):
+    row = _outbox()
+    holder = Relay()
+    [stale] = holder._claim("relay:1")
+    OrderOutbox.objects.filter(pk=row.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
+    # the same identity string: in a container the pid is 1 for every replica
+    assert [r.pk for r in Relay()._claim("relay:1")] == [row.pk]
+
+    monkeypatch.setattr(holder._publisher, "publish", Mock())
+    holder._publish_one("relay:1", stale)
+
+    row.refresh_from_db()
+    assert row.status == OrderOutbox.Status.PENDING, "a superseded worker completed another lease"
+
+
+def test_a_superseded_worker_cannot_reschedule_another_lease(monkeypatch):
+    row = _outbox()
+    holder = Relay()
+    [stale] = holder._claim("relay:1")
+    OrderOutbox.objects.filter(pk=row.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
+    Relay()._claim("relay:1")
+    fresh = OrderOutbox.objects.get(pk=row.pk)
+
+    monkeypatch.setattr(holder._publisher, "publish", Mock(side_effect=Exception("broker down")))
+    holder._publish_one("relay:1", stale)
+
+    row.refresh_from_db()
+    assert row.locked_until == fresh.locked_until, "the current lease was released by a stale worker"
+    assert row.attempts == fresh.attempts
+
+
+def test_an_unclaimed_row_is_never_marked_published(monkeypatch):
+    row = _outbox()
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock())
+
+    relay._publish_one("relay:1", row)
+
+    row.refresh_from_db()
+    assert row.status == OrderOutbox.Status.PENDING
+
+
+def test_a_row_with_a_live_lock_but_no_token_is_never_completed(monkeypatch):
+    row = _outbox()
+    # the only state where the two fencing checks differ: a live window without a token
+    OrderOutbox.objects.filter(pk=row.pk).update(
+        locked_by="relay:1", locked_until=timezone.now() + timedelta(seconds=60)
+    )
+    stale = OrderOutbox.objects.get(pk=row.pk)
+    relay = Relay()
+    monkeypatch.setattr(relay._publisher, "publish", Mock())
+
+    relay._publish_one("relay:1", stale)
+
+    row.refresh_from_db()
+    assert row.status == OrderOutbox.Status.PENDING

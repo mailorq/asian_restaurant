@@ -2,6 +2,7 @@ import os
 import random
 import socket
 import time
+import uuid
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
@@ -28,6 +29,21 @@ def _backoff_seconds(attempts: int) -> float:
     """Exponential backoff (capped) with additive jitter."""
     base = min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * (2 ** min(attempts, 10)))
     return base + random.uniform(0, base * 0.25)
+
+
+def _held(row: OrderOutbox) -> dict | None:
+    """
+    filter matching the live lease this worker holds, or None when it holds none
+
+    null token is not a lease: `lease_token=None` compiles to IS NULL and would match every
+    unclaimed row
+    """
+    if row.lease_token is None:
+        return None
+    return dict(
+        pk=row.pk, lease_token=row.lease_token, status=OrderOutbox.Status.PENDING,
+        locked_until__gt=timezone.now(),
+    )
 
 
 def _headers(row: OrderOutbox) -> dict:
@@ -103,9 +119,15 @@ class Command(BaseCommand):
                 .order_by("created_at")[:BATCH]
             )
             if rows:
+                # one token per claim: a re-claim mints a new one, so the previous holder is
+                # fenced off that row while keeping its own other rows
+                token = uuid.uuid4()
+                locked_until = now + timedelta(seconds=LEASE_SECONDS)
                 OrderOutbox.objects.filter(pk__in=[r.pk for r in rows]).update(
-                    locked_until=now + timedelta(seconds=LEASE_SECONDS), locked_by=worker_id
+                    locked_until=locked_until, locked_by=worker_id, lease_token=token
                 )
+                for row in rows:
+                    row.lease_token, row.locked_until, row.locked_by = token, locked_until, worker_id
         return rows
 
     def _drain(self, worker_id: str, gauge=None) -> int:
@@ -123,24 +145,29 @@ class Command(BaseCommand):
         return len(rows)
 
     def _publish_one(self, worker_id: str, row: OrderOutbox) -> None:
+        held = _held(row)
+        if held is None:
+            return
         now = timezone.now()
         try:
             self._publisher.publish(row.routing_key, row.event_type, row.payload, _headers(row))
         except Exception as exc:  # broker down / unconfirmed -> keep pending, backoff
             attempts = row.attempts + 1
-            OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id, locked_until__gte=now).update(
+            OrderOutbox.objects.filter(**held).update(
                 attempts=attempts,
                 next_attempt_at=now + timedelta(seconds=_backoff_seconds(attempts)),
                 last_error=str(exc)[:1000],
                 locked_until=None,
                 locked_by="",
+                lease_token=None,
             )
             self.stderr.write(f"outbox {row.pk} publish failed (attempt {attempts}): {exc}")
             return
-        OrderOutbox.objects.filter(pk=row.pk, locked_by=worker_id, locked_until__gte=now).update(
+        OrderOutbox.objects.filter(**held).update(
             status=OrderOutbox.Status.PUBLISHED,
             published_at=now,
             attempts=row.attempts + 1,
             locked_until=None,
             locked_by="",
+            lease_token=None,
         )
