@@ -164,7 +164,8 @@ CSRF_COOKIE_SECURE = env.bool("DJANGO_COOKIE_SECURE", default=not DEBUG)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 if not DEBUG:
-    SECURE_SSL_REDIRECT = env.bool("DJANGO_SSL_REDIRECT", default=False)
+    # on unless deliberately disabled; SECURE_PROXY_SSL_HEADER above is what makes it correct behind the TLS ingress, and a stack reachable over plain HTTP is the failure this prevents
+    SECURE_SSL_REDIRECT = env.bool("DJANGO_SSL_REDIRECT", default=True)
     SECURE_HSTS_SECONDS = env.int("DJANGO_HSTS_SECONDS", default=3600)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_CONTENT_TYPE_NOSNIFF = True

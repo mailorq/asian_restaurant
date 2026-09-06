@@ -10,6 +10,8 @@ x-storefront-prod-env: &storefront-prod-env
   RABBITMQ_URL: ${RABBITMQ_URL:?set RABBITMQ_URL}
   IDENTITY_JWT_KID: ${IDENTITY_JWT_KID:?set IDENTITY_JWT_KID (not the dev kid)}
   RATELIMIT_TRUST_XFF: "1"
+  # TLS is terminated by an ingress in front of this stack, which must set X-Forwarded-Proto
+  DJANGO_SSL_REDIRECT: ${DJANGO_SSL_REDIRECT:-1}
   # signing key is a read-only secret file, never inline (settings reject a non-empty inline key)
   IDENTITY_JWT_PRIVATE_KEY: ""
   IDENTITY_JWT_PRIVATE_KEY_FILE: /run/secrets/identity_jwt_private_key
@@ -69,6 +71,10 @@ services:
 
   prometheus:
     ports: !override ["127.0.0.1:9090:9090"]
+
+  frontend:
+    # loopback only: an external ingress terminates TLS and forwards here. published on 0.0.0.0 this serves the login form over plain HTTP
+    ports: !override ["127.0.0.1:80:80"]
 
   backend:
     # signing key is a read-only Docker secret file, never an env var; dev mount dropped and

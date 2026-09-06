@@ -60,6 +60,25 @@ grep -q "run_ops_consumer" <<<"$rendered" && { echo "FAIL: legacy ops consumer p
 grep -B3 -A3 'published: "9090"' <<<"$rendered" | grep -q 'host_ip: 127.0.0.1' || {
   echo "FAIL: prometheus 9090 not bound to loopback"; fail=1; }
 
+# nothing may be reachable from outside the host: TLS is terminated by an ingress in front of this stack, so a port published on 0.0.0.0 would serve the app in the clear
+RENDERED_JSON="$rendered_json" python3 - <<'PORTS' || fail=1
+import json, os
+
+exposed = [
+    f"{name}:{p.get('published')}"
+    for name, spec in sorted(json.loads(os.environ["RENDERED_JSON"])["services"].items())
+    for p in (spec.get("ports") or [])
+    if p.get("host_ip") not in ("127.0.0.1", "::1")
+]
+if exposed:
+    print("FAIL: published outside loopback: " + ", ".join(exposed))
+    raise SystemExit(1)
+PORTS
+
+# HTTPS redirect must be on by default in production, not left to the operator to remember
+grep -Eq "DJANGO_SSL_REDIRECT:[[:space:]]*[\"']?(1|true|True)[\"']?" <<<"$rendered" || {
+  echo "FAIL: DJANGO_SSL_REDIRECT not enabled in the production render"; fail=1; }
+
 # every Django process must start under its production guard. keyed off the image a service is
 # built from rather than a service count, so a new one cannot satisfy the check by merely existing
 RENDERED_JSON="$rendered_json" python3 - <<'GUARD' || fail=1
