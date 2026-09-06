@@ -59,7 +59,9 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {"json": {"()": "operations.jsonlog.JsonFormatter"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "json"}},
+    "filters": {"redact_bodies": {"()": "operations.jsonlog.RedactBodies"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "json",
+                             "filters": ["redact_bodies"]}},
     "root": {"handlers": ["console"], "level": LOG_LEVEL},
     "loggers": {
         "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},

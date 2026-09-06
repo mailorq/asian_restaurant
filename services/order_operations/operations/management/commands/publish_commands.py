@@ -209,10 +209,13 @@ class Command(BaseCommand):
         try:
             parse_event(envelope)
         except Exception as exc:
-            # deterministic: no later attempt can make this row valid
-            log.exception("command envelope violates the contract", extra={"event_id": str(row.event_id)})
+            # deterministic: no later attempt can make this row valid. the rejected value is text an employee typed, so only the shape of the failure is recorded
+            kind = command_service.describe_error(exc)
+            log.warning("command envelope violates the contract",
+                        extra={"event_id": str(row.event_id), "error_kind": "contract_validation",
+                               "error_shape": kind})
             command_service.reject_undeliverable(
-                row, code=command_service.CODE_INVALID_PAYLOAD, detail=str(exc)[:1000]
+                row, code=command_service.CODE_INVALID_PAYLOAD, detail=kind
             )
             command_dispatch_total.labels("invalid").inc()
             return False
@@ -254,14 +257,14 @@ class Command(BaseCommand):
         log.warning("command topology not ready: %s", exc, extra={"attempts": attempts})
         if attempts < TOPOLOGY_MAX_ATTEMPTS:
             if command_service.schedule_retry(
-                row, backoff=timedelta(seconds=TOPOLOGY_RETRY_SECONDS), error=str(exc)[:1000]
+                row, backoff=timedelta(seconds=TOPOLOGY_RETRY_SECONDS), error=command_service.describe_error(exc)
             ):
                 command_dispatch_total.labels("topology").inc()
             else:
                 command_dispatch_total.labels("superseded").inc()
             return
         if command_service.reject_undeliverable(
-            row, code=command_service.CODE_UNDELIVERABLE, detail=str(exc)[:1000]
+            row, code=command_service.CODE_UNDELIVERABLE, detail=command_service.describe_error(exc)
         ) is None:
             command_dispatch_total.labels("superseded").inc()
             return
@@ -274,14 +277,13 @@ class Command(BaseCommand):
     def _defer(self, row: OperationsOutbox, exc: Exception) -> None:
         attempts = row.attempts + 1
         if attempts < MAX_ATTEMPTS:
-            if command_service.schedule_retry(row, backoff=_backoff(attempts),
-                                              error=str(exc)[:1000]):
+            if command_service.schedule_retry(row, backoff=_backoff(attempts), error=command_service.describe_error(exc)):
                 command_dispatch_total.labels("retried").inc()
             else:
                 command_dispatch_total.labels("superseded").inc()
             return
 
-        if not command_service.abandon_row(row, error=str(exc)[:1000]):
+        if not command_service.abandon_row(row, error=command_service.describe_error(exc)):
             command_dispatch_total.labels("superseded").inc()
             return
         command_dispatch_total.labels("abandoned").inc()

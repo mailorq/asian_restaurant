@@ -180,9 +180,13 @@ LOGGING = {
     "formatters": {
         "json": {"()": "config.jsonlog.JsonFormatter"},
     },
+    "filters": {
+        "redact_bodies": {"()": "config.jsonlog.RedactBodies"},
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+            "filters": ["redact_bodies"],
             "formatter": "json",
         },
     },

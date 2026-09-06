@@ -5,6 +5,7 @@ import contextvars
 import datetime as dt
 import json
 import logging
+import re
 
 # LogRecord always carries these; anything else on the record came from `extra`
 _RESERVED = frozenset({
@@ -50,3 +51,18 @@ class JsonFormatter(logging.Formatter):
             payload["stack"] = self.formatStack(record.stack_info)
         # default=str keeps a UUID or a datetime in `extra` from breaking the record
         return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+class RedactBodies(logging.Filter):
+
+    _BODY = re.compile("body_prefix=.*", re.DOTALL)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+        except Exception:  # pragma: no cover - a broken record is still worth emitting
+            return True
+        if "body_prefix=" in rendered:
+            record.msg = self._BODY.sub("body_prefix=<redacted>", rendered)
+            record.args = ()
+        return True

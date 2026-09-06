@@ -134,7 +134,7 @@ def test_relay_publish_failure_backs_off_and_stays_pending(monkeypatch):
     assert row.status == OrderOutbox.Status.PENDING
     assert row.attempts == 1
     assert row.next_attempt_at is not None
-    assert "broker down" in row.last_error
+    assert "Exception" in row.last_error, "the failure is recorded by shape, not by its text"
 
 
 def test_relay_success_marks_published(monkeypatch):

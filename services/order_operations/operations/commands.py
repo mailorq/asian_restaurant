@@ -245,6 +245,28 @@ def _normalise_error(text: str, limit: int = 1000) -> str:
     return " ".join(str(text).split())[:limit]
 
 
+def describe_error(exc: Exception, limit: int = 300) -> str:
+    """
+    what an error may be recorded as: its shape, never the content it was raised over
+
+    a rejected envelope puts the value that failed into the exception message, and for a command
+    that value is text an employee typed about a customer. the field path is safe to keep, the value is not, so it never reaches last_error or a log line
+    """
+    parts = [type(exc).__name__]
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            for item in errors():
+                path = ".".join(str(p) for p in item.get("loc", ()))
+                parts.append(f"{path or '?'}:{item.get('type', '?')}")
+        except Exception:  # pragma: no cover - a malformed error object is still an error
+            parts.append("unreadable")
+    reply_code = getattr(exc, "reply_code", None)
+    if reply_code is not None:
+        parts.append(f"reply_code={reply_code}")
+    return " ".join(parts)[:limit]
+
+
 def _manual_verdict_contradicted(command: OperationCommand, success: bool) -> bool:
     """
     true when a late outcome disagrees with an operator's manual resolution
