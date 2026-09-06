@@ -104,13 +104,21 @@ def test_connection_failure_defers_the_row_and_keeps_the_command_open(monkeypatc
     assert _reload(command).status == OperationCommand.Status.PENDING
 
 
-def test_missing_topology_never_marks_the_command_dispatch_failed(monkeypatch):
+def test_a_returned_publish_is_never_called_delivery_unknown(monkeypatch):
     command = _command()
     OperationsOutbox.objects.filter(command=command).update(
         attempts=publish_commands.MAX_ATTEMPTS + 3
     )
 
-    # nothing reached the broker, so this is an operator problem, not delivery uncertainty
+    # the broker returned it, so nothing was delivered: that is a verdict, not uncertainty
+    _relay(monkeypatch, _raising(UnroutableError([])))._drain(WORKER)
+
+    assert _reload(command).status != OperationCommand.Status.DISPATCH_FAILED
+
+
+def test_a_returned_publish_keeps_retrying_while_its_budget_lasts(monkeypatch):
+    command = _command()
+
     _relay(monkeypatch, _raising(UnroutableError([])))._drain(WORKER)
 
     assert _reload(command).status == OperationCommand.Status.PENDING

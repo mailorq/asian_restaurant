@@ -49,7 +49,7 @@ so the outcome direction needs no new exchange or permission. There is no
 `operations.commands.outcomes` exchange.
 
 They do get their own queue on each hop - `operations.bridge.outcomes` on the storefront vhost and
-`operations.outcomes` on the operations vhost - because a command dies at 30s and a shared queue
+`operations.outcomes` on the operations vhost - because a command has a deadline and a shared queue
 puts it behind whatever projection traffic arrived first, a `snapshot.*` backfill included. A
 transition the storefront applied would then be read as `timed_out`. So `order.*` is enumerated as
 `order.created` / `order.status_changed` rather than matched, and both declare passes drop the
@@ -100,6 +100,8 @@ pending         -> rejected           expired BEFORE dispatch (never published; 
 {pending, dispatched} -> timed_out    deadline passed, delivery attempted or unknown
 {pending, dispatched, timed_out, dispatch_failed} -> succeeded | rejected   outcome applied
 {timed_out, dispatch_failed} -> succeeded | rejected   operator verdict (manual, audited)
+pending         -> rejected            the broker returned every attempt (delivery DISPROVED)
+pending         -> rejected            the row can never form a valid envelope (quarantine)
 ```
 **Terminal = `{succeeded, rejected}`.** `command_expired` and `actor_not_authorized` are reject
 codes inside `rejected`, not extra states.
@@ -197,8 +199,17 @@ parse -> single transaction.atomic():
   the attempts are spent, so nothing republishes it and only an outcome or an operator can close it.
 - **exchange or binding missing (404 / unroutable) with a live broker** - the storefront consumer
   owns that topology and the publisher holds `configure=^$`, so this is an operator problem and
-  nothing was delivered. The row backs off and alerts; it is never `dispatch_failed`, which would
-  claim delivery is in doubt when it demonstrably never happened.
+  nothing was delivered. The retry is rare and fixed rather than exponential, because the repair
+  is an operator action; once its budget is spent the command is closed as `rejected/undeliverable`.
+  It is never `dispatch_failed`, which would claim delivery is in doubt when it demonstrably never
+  happened. A channel the broker *closes* is different: the close can follow acceptance, so that
+  path keeps the bounded retry into `dispatch_failed`.
+
+  A row whose envelope violates the contract is quarantined at once as `rejected/invalid_payload`:
+  no later attempt can make it valid, and retrying it forever only hides the backlog behind it.
+
+  The relay's whole retry schedule has to fit inside `COMMAND_TTL`, or a command can only ever
+  arrive already expired. That is asserted from the constants themselves, not from a comment.
 - **poison message on the consumer** - dead-lettered to `commands.orders.dlq` by the broker.
 - `timed_out` and `dispatch_failed` are operational states requiring alert and reconciliation; the
   UI must render them as "delivery unconfirmed", never as "nothing happened".

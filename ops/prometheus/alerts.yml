@@ -55,7 +55,7 @@ groups:
           description: "no process is applying transition commands, so every command will time out."
 
       - alert: CommandOutboxBacklogStale
-        # a command outlives its own deadline in 30s, so a backlog older than that is already producing timed_out commands rather than applied ones
+        # a backlog older than this is already producing timed_out commands rather than applied ones
         expr: operations_command_outbox_oldest_pending_age_seconds > 60
         for: 2m
         labels: {severity: critical}
@@ -64,13 +64,22 @@ groups:
           description: "oldest pending command is {{ $value }}s old; the relay or the storefront topology is down."
 
       - alert: CommandOutcomeBacklog
-        # outcomes have their own queue precisely so they never wait behind projection traffic; a command dies at 30s, so anything still queued after a minute already missed its deadline
+        # outcomes have their own queue precisely so they never wait behind projection traffic; anything still queued after a minute is eating into a deadline it cannot get back
         expr: rabbitmq_queue_messages{queue="operations.outcomes"} > 0
         for: 1m
         labels: {severity: critical}
         annotations:
           summary: "command outcomes are not being consumed"
           description: "{{ $value }} outcome(s) waiting; commands the storefront already applied are being marked timed_out."
+
+      - alert: CommandUndeliverable
+        # the broker returned every attempt, so the command was answered locally rather than applied: the exchange or binding the relay publishes to is missing
+        expr: increase(operations_command_dispatch_total{result="undeliverable"}[10m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "commands are being closed as undeliverable"
+          description: "{{ $value }} command(s) never reached a queue; the command exchange or its binding is missing."
 
       - alert: CommandDispatchAbandoned
         # the row is terminal and nothing will republish it, so the command can only be closed

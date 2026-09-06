@@ -407,7 +407,7 @@ def test_deadline_passing_while_the_command_lock_is_held_is_not_claimed(monkeypa
         # the row is eligible when it is selected; the deadline lapses while the command lock
         # is being awaited, so only a clock read taken after the locks sees it
         reads["n"] += 1
-        return real() if reads["n"] == 1 else real() + timedelta(seconds=31)
+        return real() if reads["n"] == 1 else real() + commands.COMMAND_TTL + timedelta(seconds=1)
 
     monkeypatch.setattr(commands.timezone, "now", creeping)
     result, row = commands.claim_or_expire(_outbox(command).pk, worker="w1", lease=LEASE)

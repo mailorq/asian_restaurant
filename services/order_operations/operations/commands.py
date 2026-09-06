@@ -28,7 +28,8 @@ COMMAND_TYPE_TRANSITION = "orders.transition"
 REQUESTED_ROUTING_KEY = "orders.transition.requested"
 ACTOR_ROLE = "restaurant_employee"
 PRODUCER = "operations"
-COMMAND_TTL = timedelta(seconds=30)
+# an employee action outlives a brief broker outage: the relay's own retry schedule has to fit inside this, or a command can only ever arrive already expired
+COMMAND_TTL = timedelta(minutes=5)
 # a confirm advances only these; timed_out is not re-dispatched, its deadline has already
 # elapsed and it stays a reconciliation signal until an outcome arrives
 DISPATCHABLE = frozenset(
@@ -44,6 +45,9 @@ MANUAL_OUTCOMES = {
     "rejected": OperationCommand.Status.REJECTED,
 }
 MANUAL_RESULT_CODE = "resolved_manually"
+# local verdicts: the broker returned the message, or the row could never form a valid envelope. neither travels the wire, so they are not outcome reject codes
+CODE_UNDELIVERABLE = "undeliverable"
+CODE_INVALID_PAYLOAD = "invalid_payload"
 RESOLUTION_REASON_MAX = 500
 
 
@@ -275,6 +279,39 @@ def resolve_manually(command: OperationCommand, *, outcome: str, operator: str, 
         _audit(locked, actor=operator, role="operator", result=MANUAL_RESULT_CODE)
         _settle(row)
         return locked
+
+
+def reject_undeliverable(row: OperationsOutbox, *, code: str, detail: str) -> OperationCommand | None:
+    """
+    closes a row and its command when non-delivery is established rather than suspected
+
+    the broker returned every attempt, or the row can never form a valid envelope, so an outcome
+    can never arrive and waiting for one would strand the command. locks outbox before command,
+    the order every other writer here uses
+    """
+    with transaction.atomic():
+        held = _held(row)
+        if held is None:
+            return None
+        locked_row = OperationsOutbox.objects.select_for_update().filter(**held).first()
+        if locked_row is None:
+            return None
+        OperationsOutbox.objects.filter(pk=locked_row.pk).update(
+            status=OperationsOutbox.Status.FAILED, attempts=F("attempts") + 1,
+            last_error=detail[:1000], next_attempt_at=None,
+            locked_until=None, locked_by="", lease_token=None,
+        )
+        if locked_row.command_id is None:
+            return None
+        command = OperationCommand.objects.select_for_update().get(pk=locked_row.command_id)
+        if command.status in OperationCommand.TERMINAL:
+            return command
+        command.status = OperationCommand.Status.REJECTED
+        command.result_code = code
+        command.result_detail = detail[:1000]
+        command.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
+        _audit(command, actor=command.actor_id, role=ACTOR_ROLE, result=code)
+        return command
 
 
 def _suppress_expired(row: OperationsOutbox, command: OperationCommand) -> None:

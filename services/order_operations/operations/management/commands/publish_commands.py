@@ -39,6 +39,11 @@ LEASE = timedelta(seconds=60)
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 64
 MAX_ATTEMPTS = 5
+# a returned publish means the topology is missing, which an operator repairs in minutes. an
+# exponential backoff is the wrong shape for that, and an unbounded one leaves the command open
+# forever, so these retries are rare, fixed and counted
+TOPOLOGY_RETRY_SECONDS = 20
+TOPOLOGY_MAX_ATTEMPTS = 8
 SWEEP_INTERVAL_SECONDS = 5
 AGGREGATE_TYPE = "order"
 
@@ -203,8 +208,11 @@ class Command(BaseCommand):
         try:
             parse_event(envelope)
         except Exception as exc:
+            # deterministic: no later attempt can make this row valid
             log.exception("command envelope violates the contract", extra={"event_id": str(row.event_id)})
-            command_service.schedule_retry(row, backoff=_backoff(MAX_ATTEMPTS), error=str(exc)[:1000])
+            command_service.reject_undeliverable(
+                row, code=command_service.CODE_INVALID_PAYLOAD, detail=str(exc)[:1000]
+            )
             command_dispatch_total.labels("invalid").inc()
             return False
 
@@ -212,11 +220,15 @@ class Command(BaseCommand):
             messaging.publish_envelope(
                 self._open(), messaging.COMMANDS_EXCHANGE, row.routing_key, envelope
             )
-        except (UnroutableError, ChannelClosedByBroker) as exc:
+        except UnroutableError as exc:
             self._drop_channel()
-            log.warning("command topology not ready: %s", exc)
-            command_service.schedule_retry(row, backoff=_backoff(row.attempts), error=str(exc)[:1000])
-            command_dispatch_total.labels("topology").inc()
+            self._undeliverable(row, exc)
+            return False
+        except ChannelClosedByBroker as exc:
+            # the broker can close a channel after accepting a message, so unlike a returned
+            # publish this is not proof that nothing was delivered
+            self._drop_channel()
+            self._defer(row, exc)
             return False
         except (AMQPError, OSError) as exc:
             self._drop_connection()
@@ -233,6 +245,29 @@ class Command(BaseCommand):
             return False
         command_dispatch_total.labels("dispatched").inc()
         return True
+
+    def _undeliverable(self, row: OperationsOutbox, exc: Exception) -> None:
+        """the broker returned the message: this attempt provably reached no queue"""
+        attempts = row.attempts + 1
+        log.warning("command topology not ready: %s", exc, extra={"attempts": attempts})
+        if attempts < TOPOLOGY_MAX_ATTEMPTS:
+            if command_service.schedule_retry(
+                row, backoff=timedelta(seconds=TOPOLOGY_RETRY_SECONDS), error=str(exc)[:1000]
+            ):
+                command_dispatch_total.labels("topology").inc()
+            else:
+                command_dispatch_total.labels("superseded").inc()
+            return
+        if command_service.reject_undeliverable(
+            row, code=command_service.CODE_UNDELIVERABLE, detail=str(exc)[:1000]
+        ) is None:
+            command_dispatch_total.labels("superseded").inc()
+            return
+        command_dispatch_total.labels("undeliverable").inc()
+        log.error(
+            "command never reached a queue, closing it", extra={"attempts": attempts,
+            "event_id": str(row.event_id), "correlation_id": str(row.correlation_id)},
+        )
 
     def _defer(self, row: OperationsOutbox, exc: Exception) -> None:
         attempts = row.attempts + 1
