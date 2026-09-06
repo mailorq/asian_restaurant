@@ -72,6 +72,15 @@ groups:
           summary: "command outcomes are not being consumed"
           description: "{{ $value }} outcome(s) waiting; commands the storefront already applied are being marked timed_out."
 
+      - alert: CommandInvalidPayload
+        # a row that can never form a valid event is closed at once and never retried, so this is the only signal that one existed
+        expr: increase(operations_command_dispatch_total{result="invalid"}[10m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "a command could not be encoded as a valid event"
+          description: "{{ $value }} command(s) quarantined; the stored payload does not satisfy the contract."
+
       - alert: CommandUndeliverable
         # the broker returned every attempt, so the command was answered locally rather than applied: the exchange or binding the relay publishes to is missing
         expr: increase(operations_command_dispatch_total{result="undeliverable"}[10m]) > 0
