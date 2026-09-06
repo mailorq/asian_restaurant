@@ -107,5 +107,3 @@ def test_a_parsing_failure_carries_no_exception_field_at_all(emitted):
     assert "exception" not in record and "exception_type" not in record
     assert MARKER not in json.dumps(record)
     assert record["message_id"] == "m-1"
-
-
