@@ -6,6 +6,7 @@ queues are bound to it, so the message lands back in the one it fell out of
 """
 
 import datetime as dt
+import hashlib
 import json
 import logging
 
@@ -18,7 +19,12 @@ log = logging.getLogger(__name__)
 
 QUEUE = messaging.DLQ
 PREVIEW = 20
-BODY_PREVIEW = 200
+DIGEST = 16
+
+
+def _digest(body: bytes) -> str:
+    """identifies a payload across log lines without carrying what is inside it"""
+    return hashlib.sha256(body).hexdigest()[:DIGEST]
 
 
 def _summary(properties, body: bytes) -> str:
@@ -27,7 +33,8 @@ def _summary(properties, body: bytes) -> str:
     except (json.JSONDecodeError, AttributeError, TypeError):
         event_type = "unparsed"
     death = (properties.headers or {}).get("x-death") or [{}]
-    return f"{event_type} | reason={death[0].get('reason', '?')} | id={properties.message_id}"
+    return (f"{event_type} | reason={death[0].get('reason', '?')} | id={properties.message_id}"
+            f" | sha256={_digest(body)} | {len(body)}B")
 
 
 class Command(BaseCommand):
@@ -40,6 +47,8 @@ class Command(BaseCommand):
         parser.add_argument("--yes", action="store_true", help="required to discard")
         parser.add_argument("--reason", default="", help="why the discarded messages are unprocessable")
         parser.add_argument("--operator", default="", help="who is taking the action")
+        parser.add_argument("--show-payload", action="store_true",
+                            help="print message bodies; they carry customer phone and address")
 
     def handle(self, *args, **options) -> None:
         replay, drop = options["replay"], options["drop"]
@@ -58,7 +67,7 @@ class Command(BaseCommand):
         channel.confirm_delivery()
         try:
             if options["list"]:
-                self._list(channel)
+                self._list(channel, options["show_payload"])
             elif replay:
                 self._replay(channel, replay, options["operator"])
             else:
@@ -66,7 +75,7 @@ class Command(BaseCommand):
         finally:
             connection.close()
 
-    def _list(self, channel) -> None:
+    def _list(self, channel, show_payload: bool = False) -> None:
         """reads without consuming: everything is put back before the command returns"""
         held = []
         while len(held) < PREVIEW:
@@ -77,7 +86,8 @@ class Command(BaseCommand):
         self.stdout.write(f"{QUEUE}: {len(held)} message(s) read")
         for _, properties, body in held:
             self.stdout.write(f"  {_summary(properties, body)}")
-            self.stdout.write(f"    {body[:BODY_PREVIEW].decode(errors='replace')}")
+            if show_payload:
+                self.stdout.write(f"    {body.decode(errors='replace')}")
         for method, _, _ in held:
             channel.basic_nack(method.delivery_tag, requeue=True)
 
@@ -125,7 +135,7 @@ class Command(BaseCommand):
                 "dlq message discarded",
                 extra={"message_id": properties.message_id, "routing_key": method.routing_key,
                        "operator": operator or "unattributed", "reason": reason,
-                       "body": body[:BODY_PREVIEW].decode(errors="replace")},
+                       "body_sha256": _digest(body), "body_bytes": len(body)},
             )
             channel.basic_ack(method.delivery_tag)
             done += 1

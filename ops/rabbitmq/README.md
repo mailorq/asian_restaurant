@@ -80,6 +80,11 @@ Both DLQ alerts have a matching operator action; neither tool consumes anything 
 | `orders.ops.dlq`, `commands.orders.dlq` | `backend: manage.py dlq <queue> --list \| --replay N \| --drop N --yes --reason ...` |
 | `operations.projection.dlq` | `operations: manage.py dlq --list \| --replay N \| --drop N --yes --reason ...` |
 
+Listing prints identity only - event type, reason, message id, payload sha256 and size - because
+a dead-lettered order event carries a customer phone and address, and an operator tool must not
+ship those into the log collector. `--show-payload` prints the bodies when that is what is needed.
+A discarded message is logged by hash and size, never by content.
+
 Replay puts a message back only after the publish is confirmed, and clears the spent retry budget
 so a fixed cause gets a fresh attempt; `x-replayed-by` and `x-replayed-at` stay on the message.
 Discarding is permanent, so it needs `--yes` and `--reason`, and every discarded body is logged.
