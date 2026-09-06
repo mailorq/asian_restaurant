@@ -44,6 +44,7 @@ MAX_ATTEMPTS = 5
 # forever, so these retries are rare, fixed and counted
 TOPOLOGY_RETRY_SECONDS = 20
 TOPOLOGY_MAX_ATTEMPTS = 8
+PUBLISH_REFUSED_CODES = frozenset({403, 404, 406})
 SWEEP_INTERVAL_SECONDS = 5
 AGGREGATE_TYPE = "order"
 
@@ -225,10 +226,11 @@ class Command(BaseCommand):
             self._undeliverable(row, exc)
             return False
         except ChannelClosedByBroker as exc:
-            # the broker can close a channel after accepting a message, so unlike a returned
-            # publish this is not proof that nothing was delivered
             self._drop_channel()
-            self._defer(row, exc)
+            if exc.reply_code in PUBLISH_REFUSED_CODES:
+                self._undeliverable(row, exc)
+            else:
+                self._defer(row, exc)
             return False
         except (AMQPError, OSError) as exc:
             self._drop_connection()

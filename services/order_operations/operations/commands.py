@@ -48,6 +48,12 @@ MANUAL_RESULT_CODE = "resolved_manually"
 # local verdicts: the broker returned the message, or the row could never form a valid envelope. neither travels the wire, so they are not outcome reject codes
 CODE_UNDELIVERABLE = "undeliverable"
 CODE_INVALID_PAYLOAD = "invalid_payload"
+SYSTEM_ROLE = "system"
+# what the employee is told. the broker's own wording belongs in the row, not in an API response
+LOCAL_VERDICTS = {
+    CODE_UNDELIVERABLE: "the broker never routed this command to the storefront",
+    CODE_INVALID_PAYLOAD: "the command could not be encoded as a valid event",
+}
 RESOLUTION_REASON_MAX = 500
 
 
@@ -234,6 +240,11 @@ class ClaimResult(StrEnum):
     UNAVAILABLE = "unavailable"  # already published, suppressed, or command finished
 
 
+def _normalise_error(text: str, limit: int = 1000) -> str:
+    """one line of printable text: an error ends up in a log line and an operator listing"""
+    return " ".join(str(text).split())[:limit]
+
+
 def _manual_verdict_contradicted(command: OperationCommand, success: bool) -> bool:
     """
     true when a late outcome disagrees with an operator's manual resolution
@@ -281,13 +292,14 @@ def resolve_manually(command: OperationCommand, *, outcome: str, operator: str, 
         return locked
 
 
-def reject_undeliverable(row: OperationsOutbox, *, code: str, detail: str) -> OperationCommand | None:
+def reject_undeliverable(row: OperationsOutbox, *, code: str, detail: str, by: str = "commands-relay") -> OperationCommand | None:
     """
     closes a row and its command when non-delivery is established rather than suspected
 
-    the broker returned every attempt, or the row can never form a valid envelope, so an outcome
-    can never arrive and waiting for one would strand the command. locks outbox before command,
-    the order every other writer here uses
+    the broker refused every attempt, or the row can never form a valid envelope, so an outcome
+    can never arrive and waiting for one would strand the command. the verdict is the relay's
+    own and is audited as such: the employee who asked is already on the command. locks outbox
+    before command, the order every other writer here uses
     """
     with transaction.atomic():
         held = _held(row)
@@ -298,7 +310,7 @@ def reject_undeliverable(row: OperationsOutbox, *, code: str, detail: str) -> Op
             return None
         OperationsOutbox.objects.filter(pk=locked_row.pk).update(
             status=OperationsOutbox.Status.FAILED, attempts=F("attempts") + 1,
-            last_error=detail[:1000], next_attempt_at=None,
+            last_error=_normalise_error(detail), next_attempt_at=None,
             locked_until=None, locked_by="", lease_token=None,
         )
         if locked_row.command_id is None:
@@ -308,9 +320,9 @@ def reject_undeliverable(row: OperationsOutbox, *, code: str, detail: str) -> Op
             return command
         command.status = OperationCommand.Status.REJECTED
         command.result_code = code
-        command.result_detail = detail[:1000]
+        command.result_detail = LOCAL_VERDICTS.get(code, code)
         command.save(update_fields=["status", "result_code", "result_detail", "updated_at"])
-        _audit(command, actor=command.actor_id, role=ACTOR_ROLE, result=code)
+        _audit(command, actor=by, role=SYSTEM_ROLE, result=code)
         return command
 
 

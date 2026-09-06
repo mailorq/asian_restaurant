@@ -98,15 +98,32 @@ def test_a_returned_publish_is_never_called_delivery_unknown(monkeypatch):
     assert _reload(command).status != OperationCommand.Status.DISPATCH_FAILED
 
 
-def test_a_channel_the_broker_closed_stays_delivery_unknown(monkeypatch):
+@pytest.mark.parametrize("code,text", [
+    (403, "ACCESS_REFUSED"), (404, "NOT_FOUND - no exchange"), (406, "PRECONDITION_FAILED"),
+])
+def test_a_broker_refusing_the_publish_is_a_verdict_not_uncertainty(monkeypatch, code, text):
+    command = _command(key=f"k-{code}")
+    _spend(command, publish_commands.TOPOLOGY_MAX_ATTEMPTS - 1)
+
+    _relay(monkeypatch, ChannelClosedByBroker(code, text))._drain(WORKER)
+
+    resolved = _reload(command)
+    assert resolved.status == OperationCommand.Status.REJECTED, (
+        f"{code} rejects the publish itself, so nothing was delivered"
+    )
+    assert resolved.result_code == "undeliverable"
+
+
+def test_a_channel_closed_for_any_other_reason_stays_delivery_unknown(monkeypatch):
     command = _command()
     _spend(command, publish_commands.MAX_ATTEMPTS - 1)
 
-    _relay(monkeypatch, ChannelClosedByBroker(404, "NOT_FOUND"))._drain(WORKER)
+    # an internal error or a resource alarm can close the channel after the message was accepted
+    _relay(monkeypatch, ChannelClosedByBroker(541, "INTERNAL_ERROR"))._drain(WORKER)
 
     resolved = _reload(command)
     assert resolved.status == OperationCommand.Status.DISPATCH_FAILED, (
-        "the broker can close a channel after accepting a message, so this is not proof"
+        "this close can follow acceptance, so it is not proof of anything"
     )
 
 
@@ -146,3 +163,28 @@ def test_the_worst_case_retry_schedule_fits_inside_the_command_deadline():
     broker_timeouts = 30  # allowance for the attempts themselves blocking on a dead broker
 
     assert max(network, topology) + broker_timeouts < commands.COMMAND_TTL.total_seconds()
+
+
+def test_a_system_verdict_is_not_recorded_as_the_employee_acting(monkeypatch):
+    from operations.models import OperationAuditLog
+
+    command = _command()
+    _spend(command, publish_commands.TOPOLOGY_MAX_ATTEMPTS - 1)
+
+    _relay(monkeypatch, UnroutableError([]))._drain(WORKER)
+
+    entry = OperationAuditLog.objects.get(command_id=command.command_id, result="undeliverable")
+    assert entry.actor_role == "system", "the relay closed this, not the employee who asked"
+    assert entry.actor_id != str(command.actor_id)
+
+
+def test_the_verdict_shown_to_the_employee_carries_no_broker_internals(monkeypatch):
+    command = _command()
+    _spend(command, publish_commands.TOPOLOGY_MAX_ATTEMPTS - 1)
+
+    _relay(monkeypatch, UnroutableError([]))._drain(WORKER)
+
+    detail = _reload(command).result_detail
+    assert "unroutable message(s)" not in detail, "pika's wording is an internal, not an answer"
+    assert detail, "the employee still needs to be told something"
+    assert "returned" not in detail.lower() or "broker" in detail.lower()
