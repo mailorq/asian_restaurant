@@ -81,7 +81,9 @@ grep -Eq 'proxy_set_header[[:space:]]+X-Forwarded-Proto[[:space:]]+\$scheme;' "$
   echo "FAIL: X-Forwarded-Proto forced to \$scheme; the ingress value is lost"; fail=1; }
 grep -Eq 'proxy_set_header[[:space:]]+X-Forwarded-For[[:space:]]+\$proxy_add_x_forwarded_for;' "$PROXY_PARAMS" || {
   echo "FAIL: X-Forwarded-For does not append to the chain the ingress sent"; fail=1; }
-grep -q '\$scheme' "$PROXY_PARAMS" || {
+grep -Eq 'map[[:space:]]+\$http_x_forwarded_proto[[:space:]]+\$forwarded_proto' frontend/nginx/default.conf || {
+  echo "FAIL: \$forwarded_proto is not derived from the header the ingress sent"; fail=1; }
+grep -A4 'map[[:space:]]\+\$http_x_forwarded_proto' frontend/nginx/default.conf | grep -q '\$scheme' || {
   echo "FAIL: no scheme fallback for a request that arrives without a proxy"; fail=1; }
 
 # HTTPS redirect must be on by default in production, not left to the operator to remember
