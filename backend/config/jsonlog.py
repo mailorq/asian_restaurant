@@ -16,9 +16,6 @@ _RESERVED = frozenset({
 })
 
 
-# pydantic quotes the value that failed; a traceback would carry it whole
-_REJECTED_VALUE = re.compile(r"input_value=.*?(?=, input_type=|\]|$)", re.DOTALL)
-
 _bound: contextvars.ContextVar[dict | None] = contextvars.ContextVar("log_context", default=None)
 
 
@@ -70,9 +67,7 @@ class JsonFormatter(logging.Formatter):
              if k not in _RESERVED and not k.startswith("_")}
         )
         if record.exc_info:
-            payload["exception"] = _REJECTED_VALUE.sub(
-                "input_value=<redacted>", self.formatException(record.exc_info)
-            )
+            payload["exception_type"] = record.exc_info[0].__name__
         if record.stack_info:
             payload["stack"] = self.formatStack(record.stack_info)
         # default=str keeps a UUID or a datetime in `extra` from breaking the record

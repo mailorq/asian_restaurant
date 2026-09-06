@@ -53,14 +53,15 @@ def test_extra_fields_survive_formatting(emitted):
     assert record["correlation_id"] == "c-1"
 
 
-def test_exception_is_captured_as_text(emitted):
+def test_an_exception_is_named_but_never_quoted(emitted):
     try:
         raise ValueError("boom")
     except ValueError:
         logging.getLogger(LOGGER).exception("command poison message -> DLQ")
 
     record = _records(emitted)[0]
-    assert "ValueError: boom" in record["exception"]
+    assert record["exception_type"] == "ValueError"
+    assert "boom" not in json.dumps(record), "an exception message quotes what it was raised over"
     assert record["level"] == "ERROR"
 
 
@@ -146,7 +147,7 @@ def test_a_failed_publish_is_logged_with_the_row_identifiers(emitted, monkeypatc
     assert record["attempts"] == 1
     assert record["event_id"] == str(row.event_id)
     assert record["correlation_id"] == str(row.correlation_id)
-    assert "broker down" in record["exception"]
+    assert record["exception_type"] == "Exception"
 
 
 @pytest.mark.django_db

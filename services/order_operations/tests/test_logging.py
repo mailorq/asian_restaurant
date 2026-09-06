@@ -67,14 +67,15 @@ def test_interpolated_message_is_rendered(emitted):
     assert _records(emitted)[0]["message"] == "topology not ready: NOT_FOUND"
 
 
-def test_exception_is_captured_as_text(emitted):
+def test_an_exception_is_named_but_never_quoted(emitted):
     try:
         raise ValueError("boom")
     except ValueError:
         logging.getLogger(LOGGER).exception("command publish failed")
 
     record = _records(emitted)[0]
-    assert "ValueError: boom" in record["exception"]
+    assert record["exception_type"] == "ValueError"
+    assert "boom" not in json.dumps(record), "an exception message quotes what it was raised over"
     assert record["level"] == "ERROR"
 
 
