@@ -4,7 +4,7 @@ import types
 import uuid
 
 import pytest
-from django.db import DatabaseError
+from django.db import OperationalError
 from event_contracts import OrderTransitionRequestedData
 
 from orders import command_messaging as topology
@@ -139,7 +139,7 @@ def test_database_failure_is_retried_with_an_incremented_header(consumer, order,
     channel = FakeChannel()
     monkeypatch.setattr(
         "orders.management.commands.consume_commands.apply_transition_command",
-        lambda *a, **k: (_ for _ in ()).throw(DatabaseError("deadlock")),
+        lambda *a, **k: (_ for _ in ()).throw(OperationalError("deadlock detected")),
     )
 
     consumer._on_message(channel, _method(), _properties(), _body(_request(employee_user, order.id)))
@@ -171,7 +171,7 @@ def test_exhausted_retries_go_to_the_dlq(consumer, order, employee_user, monkeyp
     channel = FakeChannel()
     monkeypatch.setattr(
         "orders.management.commands.consume_commands.apply_transition_command",
-        lambda *a, **k: (_ for _ in ()).throw(DatabaseError("deadlock")),
+        lambda *a, **k: (_ for _ in ()).throw(OperationalError("deadlock detected")),
     )
     properties = _properties({"x-retries": topology.MAX_RETRIES})
 

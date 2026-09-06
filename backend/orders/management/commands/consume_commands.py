@@ -11,7 +11,7 @@ import os
 
 import pika
 from django.core.management.base import BaseCommand
-from django.db import DatabaseError, InterfaceError, connections
+from django.db import DatabaseError, InterfaceError, OperationalError, connections
 from event_contracts import EVENT_ORDER_TRANSITION_REQUESTED, UnknownEventType, parse_event
 from pydantic import ValidationError
 
@@ -29,12 +29,14 @@ except ImportError:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 RETRY_HEADER = "x-retries"
-PREFETCH = 10
+# the callback is synchronous, so a larger window buys no throughput and only widens the set redelivered after a crash
+PREFETCH = 1
 
 
 def _safe_int(value, default: int = 0) -> int:
+    # clamped: a header below zero would buy attempts beyond the budget
     try:
-        return int(value)
+        return max(0, int(value))
     except (TypeError, ValueError):
         return default
 
@@ -101,9 +103,16 @@ class Command(BaseCommand):
             outcome = apply_transition_command(
                 data, request_event_id=envelope.event_id, correlation_id=envelope.correlation_id
             )
-        except (DatabaseError, InterfaceError):
+        except (OperationalError, InterfaceError):
+            # the connection or the transaction, not the data: worth another attempt
             connections.close_all()
             self._retry(channel, method, properties, body, retries)
+            return
+        except DatabaseError:
+            # a constraint or a bad value resolves on no later attempt, and the connection is fine
+            log.exception("command rejected by the database -> DLQ",
+                          extra={"order_id": data.order_id})
+            channel.basic_nack(method.delivery_tag, requeue=False)
             return
         except Exception:
             log.exception("command application failed -> DLQ", extra={"order_id": data.order_id})
