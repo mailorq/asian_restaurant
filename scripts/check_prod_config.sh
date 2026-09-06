@@ -75,6 +75,15 @@ if exposed:
     raise SystemExit(1)
 PORTS
 
+# the ingress terminates TLS and the hop to nginx is plain http, so overwriting these two turns the redirect below into a loop and collapses every client into one rate-limit bucket
+PROXY_PARAMS=frontend/nginx/proxy_params.conf
+grep -Eq 'proxy_set_header[[:space:]]+X-Forwarded-Proto[[:space:]]+\$scheme;' "$PROXY_PARAMS" && {
+  echo "FAIL: X-Forwarded-Proto forced to \$scheme; the ingress value is lost"; fail=1; }
+grep -Eq 'proxy_set_header[[:space:]]+X-Forwarded-For[[:space:]]+\$proxy_add_x_forwarded_for;' "$PROXY_PARAMS" || {
+  echo "FAIL: X-Forwarded-For does not append to the chain the ingress sent"; fail=1; }
+grep -q '\$scheme' "$PROXY_PARAMS" || {
+  echo "FAIL: no scheme fallback for a request that arrives without a proxy"; fail=1; }
+
 # HTTPS redirect must be on by default in production, not left to the operator to remember
 grep -Eq "DJANGO_SSL_REDIRECT:[[:space:]]*[\"']?(1|true|True)[\"']?" <<<"$rendered" || {
   echo "FAIL: DJANGO_SSL_REDIRECT not enabled in the production render"; fail=1; }
