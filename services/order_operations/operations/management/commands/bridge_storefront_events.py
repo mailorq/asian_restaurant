@@ -18,7 +18,7 @@ from event_contracts import (
 )
 
 from operations import messaging
-from operations.jsonlog import log_context
+from operations.jsonlog import describe_error, log_context
 
 log = logging.getLogger(__name__)
 
@@ -302,8 +302,9 @@ class Command(BaseCommand):
                     return
                 envelope = build_envelope(properties, event_type, payload)
             parse_event(envelope)
-        except Exception:
-            log.exception("bridge poison message -> DLQ")
+        except Exception as exc:
+            # the rejected value is the event body, which carries customer data
+            log.warning("bridge poison message -> DLQ", extra={"message_id": properties.message_id, "routing_key": method.routing_key, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         try:

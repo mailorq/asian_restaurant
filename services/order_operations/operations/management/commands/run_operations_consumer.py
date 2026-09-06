@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from operations import dispatch, messaging, projection
 from operations.commands import OutcomeMismatch
-from operations.jsonlog import log_context
+from operations.jsonlog import describe_error, log_context
 from operations.metrics import consumer_connected, projection_events
 
 log = logging.getLogger(__name__)
@@ -56,9 +56,9 @@ class Command(BaseCommand):
         retries = _safe_int((properties.headers or {}).get("x-retries"), 0)
         try:
             envelope, data = parse_event(json.loads(body))
-        except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType):
-            log.exception("operations poison message -> DLQ",
-                          extra={"message_id": getattr(properties, "message_id", None)})
+        except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType) as exc:
+            # the rejected value is the event body, which carries customer data
+            log.warning("operations poison message -> DLQ", extra={"message_id": getattr(properties, "message_id", None), "routing_key": method.routing_key, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
 

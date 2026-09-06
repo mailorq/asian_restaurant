@@ -15,7 +15,7 @@ from event_contracts import (
     EVENT_ORDER_TRANSITION_SUCCEEDED,
 )
 
-from config.jsonlog import log_context
+from config.jsonlog import describe_error, log_context
 from orders import messaging
 from orders.models import OrderOutbox
 
@@ -32,15 +32,6 @@ LEASE_SECONDS = 60
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 300
 STUCK_ATTEMPTS = 12
-
-
-def _describe(exc: Exception, limit: int = 300) -> str:
-    """the shape of a failure, never the message it was raised over an outbox row is an order event, and a broker error can quote it back"""
-    parts = [type(exc).__name__]
-    reply_code = getattr(exc, "reply_code", None)
-    if reply_code is not None:
-        parts.append(f"reply_code={reply_code}")
-    return " ".join(parts)[:limit]
 
 
 def _backoff_seconds(attempts: int) -> float:
@@ -216,7 +207,7 @@ class Command(BaseCommand):
             OrderOutbox.objects.filter(**held).update(
                 attempts=attempts,
                 next_attempt_at=now + timedelta(seconds=_backoff_seconds(attempts)),
-                last_error=_describe(exc),
+                last_error=describe_error(exc),
                 locked_until=None,
                 locked_by="",
                 lease_token=None,

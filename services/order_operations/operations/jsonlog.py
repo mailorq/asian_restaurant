@@ -16,6 +16,9 @@ _RESERVED = frozenset({
 })
 
 
+# pydantic quotes the value that failed; a traceback would carry it whole
+_REJECTED_VALUE = re.compile(r"input_value=.*?(?=, input_type=|\]|$)", re.DOTALL)
+
 _bound: contextvars.ContextVar[dict | None] = contextvars.ContextVar("log_context", default=None)
 
 
@@ -27,6 +30,28 @@ def log_context(**fields):
         yield
     finally:
         _bound.reset(token)
+
+
+def describe_error(exc: Exception, limit: int = 300) -> str:
+    """
+    what an error may be recorded as: its shape, never the content it was raised over
+
+    a rejected message puts the value that failed into the exception, and for a domain event that
+    value is a customer phone and address. the field path is safe to keep, the value is not
+    """
+    parts = [type(exc).__name__]
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            for item in errors():
+                path = ".".join(str(p) for p in item.get("loc", ()))
+                parts.append(f"{path or '?'}:{item.get('type', '?')}")
+        except Exception:  # pragma: no cover - a malformed error object is still an error
+            parts.append("unreadable")
+    reply_code = getattr(exc, "reply_code", None)
+    if reply_code is not None:
+        parts.append(f"reply_code={reply_code}")
+    return " ".join(parts)[:limit]
 
 
 class JsonFormatter(logging.Formatter):
@@ -46,7 +71,9 @@ class JsonFormatter(logging.Formatter):
              if k not in _RESERVED and not k.startswith("_")}
         )
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = _REJECTED_VALUE.sub(
+                "input_value=<redacted>", self.formatException(record.exc_info)
+            )
         if record.stack_info:
             payload["stack"] = self.formatStack(record.stack_info)
         # default=str keeps a UUID or a datetime in `extra` from breaking the record

@@ -15,7 +15,7 @@ from django.db import DatabaseError, InterfaceError, OperationalError, connectio
 from event_contracts import EVENT_ORDER_TRANSITION_REQUESTED, UnknownEventType, parse_event
 from pydantic import ValidationError
 
-from config.jsonlog import log_context
+from config.jsonlog import describe_error, log_context
 from config.metrics import commands_applied_total, commands_consumer_connected
 from orders import command_messaging as topology
 from orders import messaging
@@ -79,9 +79,9 @@ class Command(BaseCommand):
         retries = _safe_int((properties.headers or {}).get(RETRY_HEADER), 0)
         try:
             envelope, data = parse_event(json.loads(body))
-        except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType):
-            log.exception("command poison message -> DLQ",
-                          extra={"message_id": getattr(properties, "message_id", None)})
+        except (json.JSONDecodeError, ValueError, ValidationError, UnknownEventType) as exc:
+            # the rejected value is text an employee typed about a customer
+            log.warning("command poison message -> DLQ", extra={"message_id": getattr(properties, "message_id", None), "routing_key": method.routing_key, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         with log_context(
@@ -108,14 +108,13 @@ class Command(BaseCommand):
             connections.close_all()
             self._retry(channel, method, properties, body, retries)
             return
-        except DatabaseError:
+        except DatabaseError as exc:
             # a constraint or a bad value resolves on no later attempt, and the connection is fine
-            log.exception("command rejected by the database -> DLQ",
-                          extra={"order_id": data.order_id})
+            log.warning("command rejected by the database -> DLQ", extra={"order_id": data.order_id, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
-        except Exception:
-            log.exception("command application failed -> DLQ", extra={"order_id": data.order_id})
+        except Exception as exc:
+            log.warning("command application failed -> DLQ", extra={"order_id": data.order_id, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         commands_applied_total.labels(_label(outcome)).inc()

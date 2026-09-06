@@ -5,6 +5,7 @@ import uuid
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError
 
+from config.jsonlog import describe_error
 from ops import service
 from orders import messaging
 
@@ -75,8 +76,8 @@ class Command(BaseCommand):
             return
         try:
             payload = json.loads(body)
-        except (json.JSONDecodeError, ValueError):
-            log.exception("ops poison (bad json) -> DLQ")
+        except (json.JSONDecodeError, ValueError) as exc:
+            log.warning("ops poison (bad json) -> DLQ", extra={"message_id": getattr(properties, "message_id", None), "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         if not isinstance(payload, dict) or "order_id" not in payload:
@@ -91,8 +92,9 @@ class Command(BaseCommand):
                 aggregate_version=aggregate_version,
                 payload=payload,
             )
-        except (KeyError, TypeError):
-            log.exception("ops poison (bad payload) -> DLQ")
+        except (KeyError, TypeError) as exc:
+            # the rejected value is the event body, which carries customer data
+            log.warning("ops poison (bad payload) -> DLQ", extra={"event_id": event_id, "event_type": event_type, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
         except (service.OutOfOrder, DatabaseError):
