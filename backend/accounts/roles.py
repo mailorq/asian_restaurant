@@ -86,11 +86,15 @@ def set_staff_role(*, actor, target, role: str | None):
         raise NotAuthorized("only an active superuser may change a staff role")
 
     user = get_user_model().objects.select_for_update().get(pk=target.pk)
-    current = staff_role(user)
-    if current == role:
+    staff_groups = [*StaffRole.values, LEGACY_GROUP]
+    # compare the membership that is actually there: a broken double grant resolves to no role, and comparing resolved roles would call clearing it a noop
+    held = set(user.groups.filter(name__in=staff_groups).values_list("name", flat=True))
+    wanted = {role} if role else set()
+    if held == wanted:
         return user
+    current = staff_role(user)
 
-    user.groups.remove(*Group.objects.filter(name__in=[*StaffRole.values, LEGACY_GROUP]))
+    user.groups.remove(*Group.objects.filter(name__in=staff_groups))
     if role is not None:
         group, _ = Group.objects.get_or_create(name=role)
         user.groups.add(group)
