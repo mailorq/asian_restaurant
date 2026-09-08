@@ -204,9 +204,8 @@ def _authz_changed(envelope: Envelope, data) -> None:
                 projection_events.labels(envelope.event_type, "idempotent").inc()
                 return
             raise ProjectionConflict("authz", envelope.aggregate.id, incoming, envelope.event_id)
-    defaults = {"authz_version": incoming, "role_active": data.role_active, "user_active": data.user_active}
-    if sent_roles:
-        defaults |= {"roles": roles, "roles_known": True}
+    # a newer event replaces the state it describes: keeping roles it never carried would pair a fresh flag with a role nobody re-confirmed
+    defaults = {"authz_version": incoming, "role_active": data.role_active, "user_active": data.user_active, "roles": roles, "roles_known": sent_roles}
     EmployeeAuthorization.objects.update_or_create(subject_id=data.subject_id, defaults=defaults)
     projection_events.labels(envelope.event_type, "applied").inc()
 

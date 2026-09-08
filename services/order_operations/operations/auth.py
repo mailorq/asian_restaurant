@@ -32,7 +32,8 @@ def _authorized(claims) -> bool:
         authz = EmployeeAuthorization.objects.filter(subject_id=subject).first()
     except Exception:
         return False
-    if not (authz and authz.user_active and authz.authz_version == claims.get("authz_version")):
+    # role_active and roles come from one emitter, so disagreement is corruption rather than a grant. it is checked here as well as in the contract
+    if not (authz and authz.user_active and authz.role_active and authz.authz_version == claims.get("authz_version")):
         return False
     if not authz.roles_known:
         # identity has never sent roles for this subject; the boolean is all this projection has
