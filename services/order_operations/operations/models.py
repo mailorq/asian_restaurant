@@ -29,6 +29,8 @@ class EmployeeAuthorization(models.Model):
     subject_id = models.PositiveIntegerField(unique=True)
     authz_version = models.PositiveIntegerField(default=0)
     role_active = models.BooleanField(default=False)
+    # empty while a projection predates roles; the boolean above still answers then
+    roles = models.JSONField(default=list, blank=True)
     user_active = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -188,13 +188,16 @@ def _authz_changed(envelope: Envelope, data) -> None:
             return
         if incoming == existing.authz_version:
             # same version, same state is an idempotent re-emit; contradictory state is a fault
-            if (existing.role_active, existing.user_active) == (data.role_active, data.user_active):
+            incoming_roles = sorted(getattr(data, "roles", None) or [])
+            if (existing.role_active, existing.user_active, sorted(existing.roles or [])) == (
+                data.role_active, data.user_active, incoming_roles
+            ):
                 projection_events.labels(envelope.event_type, "idempotent").inc()
                 return
             raise ProjectionConflict("authz", envelope.aggregate.id, incoming, envelope.event_id)
     EmployeeAuthorization.objects.update_or_create(
         subject_id=data.subject_id,
-        defaults={"authz_version": incoming, "role_active": data.role_active, "user_active": data.user_active},
+        defaults={"authz_version": incoming, "role_active": data.role_active, "roles": sorted(getattr(data, "roles", None) or []), "user_active": data.user_active},
     )
     projection_events.labels(envelope.event_type, "applied").inc()
 

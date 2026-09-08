@@ -5,6 +5,7 @@ from ninja.security import HttpBearer
 ISSUER = "identity"
 AUDIENCE = "operations"
 EMPLOYEE_ROLE = "restaurant_employee"
+STAFF_ROLES = frozenset({"restaurant_operator", "restaurant_manager", EMPLOYEE_ROLE})
 
 _jwks_client = None
 
@@ -31,8 +32,14 @@ def _authorized(claims) -> bool:
         authz = EmployeeAuthorization.objects.filter(subject_id=subject).first()
     except Exception:
         return False
-    return bool(authz and authz.role_active and authz.user_active
-                and authz.authz_version == claims.get("authz_version"))
+    if not (authz and authz.user_active and authz.authz_version == claims.get("authz_version")):
+        return False
+    projected = set(authz.roles or [])
+    if not projected:
+        # written before identity carried roles; the boolean is all this projection knows
+        return bool(authz.role_active)
+    # the capability must hold on both sides: a token cannot grant what identity did not
+    return bool(projected & set(claims.get("roles") or []))
 
 
 class EmployeeJWTAuth(HttpBearer):
@@ -44,7 +51,7 @@ class EmployeeJWTAuth(HttpBearer):
                                 audience=AUDIENCE, issuer=ISSUER)
         except Exception:
             return None
-        if EMPLOYEE_ROLE not in claims.get("roles", []):
+        if not (set(claims.get("roles") or []) & STAFF_ROLES):
             return None
         if not _authorized(claims):
             return None
