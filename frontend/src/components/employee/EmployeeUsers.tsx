@@ -4,17 +4,111 @@ import { Icon } from "../Icon";
 import { useToast } from "../../stores/toast";
 import { useAuth } from "../../stores/auth";
 import {
+  useCustomerOrders,
   useEmployeeUsers,
   useSetRole,
   useUserDetail,
+  type CustomerOrderPreview,
+  type CustomerOrderScope,
   type EmployeeUser,
 } from "../../api/employee";
 import { ORDER_STATUS, formatOrderDate } from "../../api/orders";
 import { formatPrice } from "../../lib/menu";
 import { formatUaPhone } from "../../lib/phone";
 
+const SCOPES: { value: CustomerOrderScope; label: string }[] = [
+  { value: "all", label: "Все" },
+  { value: "active", label: "Активные" },
+  { value: "history", label: "Завершённые" },
+];
+
+function OrderRow({ order }: { order: CustomerOrderPreview }) {
+  const status = ORDER_STATUS[order.status];
+  return (
+    <li className="rounded-xl border border-border p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Заказ №{order.id}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.cls}`}>
+          {status.label}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-muted">{formatOrderDate(order.created_at)}</p>
+      <p className="tnum mt-1 text-right text-sm font-semibold">{formatPrice(order.total)}</p>
+    </li>
+  );
+}
+
+function CustomerOrders({ userId, total }: { userId: number; total: number }) {
+  const [page, setPage] = useState(1);
+  const [scope, setScope] = useState<CustomerOrderScope>("all");
+  const { data, isLoading } = useCustomerOrders(userId, page, scope);
+  const pageSize = data?.page_size ?? 20;
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? total) / pageSize));
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap gap-2">
+        {SCOPES.map((s) => (
+          <button
+            key={s.value}
+            onClick={() => {
+              setScope(s.value);
+              setPage(1);
+            }}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              scope === s.value
+                ? "bg-primary text-primary-contrast"
+                : "border border-border text-muted hover:text-text"
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {isLoading || !data ? (
+        <div className="h-24 animate-pulse rounded-xl bg-surface-2" />
+      ) : data.items.length === 0 ? (
+        <p className="text-sm text-muted">Заказов нет</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {data.items.map((o) => (
+            <OrderRow key={o.id} order={o} />
+          ))}
+        </ul>
+      )}
+      {(data?.total ?? 0) > pageSize && (
+        <div className="mt-4 flex items-center justify-between text-sm text-muted">
+          <span>Всего: {data?.total}</span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="grid h-8 w-8 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Назад"
+            >
+              <Icon name="arrowLeft" size={14} />
+            </button>
+            <span className="tnum">
+              {page} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="grid h-8 w-8 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
+              aria-label="Вперёд"
+            >
+              <Icon name="arrowRight" size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UserDetailModal({ userId, onClose }: { userId: number; onClose: () => void }) {
   const { data, isLoading } = useUserDetail(userId);
+  const [showAll, setShowAll] = useState(false);
   return (
     <Modal title={data ? data.name || data.username : "Пользователь"} onClose={onClose}>
       {isLoading || !data ? (
@@ -24,24 +118,27 @@ function UserDetailModal({ userId, onClose }: { userId: number; onClose: () => v
           <p className="tnum text-sm text-muted">
             {data.phone ? formatUaPhone(data.phone) : "Телефон не указан"}
           </p>
-          <p className="mb-3 mt-4 text-sm font-semibold uppercase tracking-wide text-muted">
-            Заказы ({data.orders.length})
-          </p>
-          {data.orders.length === 0 ? (
+          <div className="mb-3 mt-4 flex items-center justify-between">
+            <p className="text-sm font-semibold uppercase tracking-wide text-muted">
+              Заказы ({data.orders_total})
+            </p>
+            {data.orders_total > data.orders_preview.length && (
+              <button
+                onClick={() => setShowAll((v) => !v)}
+                className="text-sm font-medium text-accent hover:underline"
+              >
+                {showAll ? "Свернуть" : "Все заказы"}
+              </button>
+            )}
+          </div>
+          {data.orders_total === 0 ? (
             <p className="text-sm text-muted">Заказов нет</p>
+          ) : showAll ? (
+            <CustomerOrders userId={data.id} total={data.orders_total} />
           ) : (
             <ul className="flex flex-col gap-2">
-              {data.orders.map((o) => (
-                <li key={o.id} className="rounded-xl border border-border p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Заказ №{o.id}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${ORDER_STATUS[o.status].cls}`}>
-                      {ORDER_STATUS[o.status].label}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-muted">{formatOrderDate(o.created_at)}</p>
-                  <p className="tnum mt-1 text-right text-sm font-semibold">{formatPrice(o.total)}</p>
-                </li>
+              {data.orders_preview.map((o) => (
+                <OrderRow key={o.id} order={o} />
               ))}
             </ul>
           )}

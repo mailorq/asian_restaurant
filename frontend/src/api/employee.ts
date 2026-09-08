@@ -38,14 +38,31 @@ export interface PagedUsers {
   page_size: number;
 }
 
+export interface CustomerOrderPreview {
+  id: number;
+  status: OrderStatus;
+  total: number;
+  created_at: string;
+}
+
 export interface UserDetail {
   id: number;
   username: string;
   name: string;
   phone: string | null;
   is_employee: boolean;
-  orders: Order[];
+  orders_total: number;
+  orders_preview: CustomerOrderPreview[];
 }
+
+export interface PagedCustomerOrders {
+  items: CustomerOrderPreview[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export type CustomerOrderScope = "active" | "history" | "all";
 
 // --- orders ---------------------------------------------------------------
 export function useEmployeeOrders(status: OrderStatus | "", page = 1, pageSize = 20) {
@@ -116,6 +133,23 @@ export function useUserDetail(userId: number | null) {
     queryKey: ["employee", "user", userId],
     queryFn: () => api<UserDetail>(`/employee/users/${userId}`),
     enabled: userId !== null,
+  });
+}
+
+export function useCustomerOrders(
+  userId: number | null,
+  page: number,
+  scope: CustomerOrderScope = "all",
+  enabled = true,
+  pageSize = 20,
+) {
+  return useQuery({
+    queryKey: ["employee", "user", userId, "orders", page, scope, pageSize],
+    queryFn: () =>
+      api<PagedCustomerOrders>(
+        `/employee/users/${userId}/orders?page=${page}&page_size=${pageSize}&scope=${scope}`,
+      ),
+    enabled: enabled && userId !== null,
   });
 }
 
