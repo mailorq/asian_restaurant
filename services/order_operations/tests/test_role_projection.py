@@ -109,3 +109,13 @@ def test_holding_no_role_is_not_the_same_as_never_having_been_told(keypair):
     )
 
     assert _get(keypair, [MANAGER]).status_code == 401
+
+
+def test_an_inconsistent_projection_never_authorizes(keypair):
+    """role_active and roles come from one emitter; disagreement is corruption, not a grant"""
+    EmployeeAuthorization.objects.create(
+        subject_id=SUBJECT, authz_version=VERSION, role_active=False,
+        roles=[MANAGER], roles_known=True, user_active=True,
+    )
+
+    assert _get(keypair, [MANAGER]).status_code == 401

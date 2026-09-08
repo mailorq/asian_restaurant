@@ -63,9 +63,9 @@ def test_repeated_revoke_of_absent_role_is_a_noop(user, superuser):
     assert not EmployeeRoleAudit.objects.filter(target=user).exists()
 
 
-def test_deactivating_employee_revokes_via_authz(employee_user):
+def test_deactivating_employee_revokes_via_authz(employee_user, superuser):
     start = employee_user.authz_version
-    service.set_active(actor=employee_user, target=employee_user, active=False)
+    service.set_active(actor=superuser, target=employee_user, active=False)
     employee_user.refresh_from_db()
     assert employee_user.is_active is False
     assert employee_user.authz_version == start + 1
@@ -73,9 +73,9 @@ def test_deactivating_employee_revokes_via_authz(employee_user):
     assert row.payload["user_active"] is False
 
 
-def test_deactivating_customer_emits_no_authz(user):
+def test_deactivating_customer_emits_no_authz(user, superuser):
     start = user.authz_version
-    service.set_active(actor=user, target=user, active=False)
+    service.set_active(actor=superuser, target=user, active=False)
     user.refresh_from_db()
     assert user.is_active is False and user.authz_version == start
     assert not _authz_rows(user.id).exists()
@@ -140,9 +140,9 @@ def test_admin_is_superuser_change_routes_through_service(user, superuser):
 
 def test_revoking_superuser_emits_revocation(superuser, employee_user, django_user_model):
     # someone has to be left holding the keys, so the guard against locking everyone out does not fire on what this test is actually about
-    django_user_model.objects.create_superuser(username="+79990000088", password="Pass!2345")
+    actor = django_user_model.objects.create_superuser(username="+79990000088", password="Pass!2345")
     start = superuser.authz_version
-    service.set_superuser(actor=employee_user, target=superuser, is_superuser=False)
+    service.set_superuser(actor=actor, target=superuser, is_superuser=False)
     superuser.refresh_from_db()
     assert superuser.is_superuser is False and superuser.authz_version == start + 1
     row = _authz_rows(superuser.id).latest("created_at")
@@ -151,9 +151,10 @@ def test_revoking_superuser_emits_revocation(superuser, employee_user, django_us
     assert EmployeeRoleAudit.objects.filter(target=superuser, action="revoke").exists()
 
 
-def test_repeated_superuser_change_is_a_noop(superuser, employee_user):
+def test_repeated_superuser_change_is_a_noop(superuser, employee_user, django_user_model):
+    actor = django_user_model.objects.create_superuser(username="+79990000089", password="Pass!2345")
     start = superuser.authz_version
-    service.set_superuser(actor=employee_user, target=superuser, is_superuser=True)
+    service.set_superuser(actor=actor, target=superuser, is_superuser=True)
     superuser.refresh_from_db()
     assert superuser.authz_version == start
     assert not _authz_rows(superuser.id).exists()

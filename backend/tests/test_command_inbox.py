@@ -119,11 +119,12 @@ def test_actor_revoked_after_creation_is_rejected(order, employee_user):
 
 
 def test_deactivated_actor_is_rejected(order, employee_user):
-    from employee import service as employee_service
 
     actor = _grant(employee_user)
     data = _request(actor, order.id)
-    employee_service.set_active(actor=actor, target=actor, active=False)
+    actor.is_active = False
+    actor.authz_version += 1
+    actor.save(update_fields=["is_active", "authz_version"])
 
     outcome = _apply(data)
 

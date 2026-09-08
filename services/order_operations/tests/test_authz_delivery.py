@@ -90,3 +90,32 @@ def test_known_roles_are_never_downgraded_to_unknown_at_the_same_version():
     row = _deliver(None, version=5)
 
     assert row.roles == [OPERATOR] and row.roles_known is True
+
+
+def test_a_newer_event_without_roles_forgets_the_ones_it_replaces():
+    """a mixed state would pair a new boolean with a role nobody re-confirmed"""
+    _deliver([OPERATOR], version=5)
+
+    row = _deliver(None, version=6)
+
+    assert row.roles == [] and row.roles_known is False
+    assert row.authz_version == 6
+
+
+def test_the_contract_refuses_a_payload_whose_flag_and_roles_disagree():
+    from event_contracts.events import AuthzChangedData
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AuthzChangedData(subject_id=1, authz_version=1, role_active=False,
+                         roles=[OPERATOR], user_active=True)
+    with pytest.raises(ValidationError):
+        AuthzChangedData(subject_id=1, authz_version=1, role_active=True,
+                         roles=[], user_active=True)
+
+
+def test_a_payload_without_roles_may_still_say_anything_about_the_flag():
+    from event_contracts.events import AuthzChangedData
+
+    assert AuthzChangedData(subject_id=1, authz_version=1, role_active=True,
+                            user_active=True).role_active is True

@@ -212,3 +212,62 @@ def test_the_audit_records_what_the_role_changed_from_and_to(superuser, operator
     entry = EmployeeRoleAudit.objects.filter(target=operator).latest("created_at")
     assert (entry.from_role, entry.to_role) == (StaffRole.OPERATOR, StaffRole.MANAGER)
     assert entry.action == EmployeeRoleAudit.Action.CHANGE
+
+
+def test_a_broken_double_grant_can_be_revoked(superuser, operator):
+    from django.contrib.auth.models import Group
+
+    from accounts.roles import set_staff_role, staff_role
+
+    operator.groups.add(Group.objects.get_or_create(name=StaffRole.MANAGER)[0])
+    assert staff_role(operator) is None  # ambiguous, so nothing resolves
+
+    set_staff_role(actor=superuser, target=operator, role=None)
+
+    operator.refresh_from_db()
+    assert list(operator.groups.all()) == [], "revoking must clear what is actually there"
+
+
+def test_a_legacy_group_is_cleared_by_a_revoke(superuser, operator):
+    from django.contrib.auth.models import Group
+
+    from accounts.roles import LEGACY_GROUP, set_staff_role
+
+    operator.groups.add(Group.objects.get_or_create(name=LEGACY_GROUP)[0])
+
+    set_staff_role(actor=superuser, target=operator, role=None)
+
+    operator.refresh_from_db()
+    assert list(operator.groups.all()) == []
+
+
+@pytest.mark.parametrize("call", ["superuser", "active"])
+def test_privileged_changes_need_an_active_superuser(manager, operator, call, django_user_model):
+    from accounts.roles import NotAuthorized
+    from employee import service
+
+    django_user_model.objects.create_superuser(username="+79990000066", password="Pass!2345")
+    target = operator
+    target.is_superuser = True
+    target.save(update_fields=["is_superuser"])
+
+    with pytest.raises(NotAuthorized):
+        if call == "superuser":
+            service.set_superuser(actor=manager, target=target, is_superuser=False)
+        else:
+            service.set_active(actor=manager, target=target, active=False)
+
+    target.refresh_from_db()
+    assert target.is_superuser and target.is_active
+
+
+def test_a_deactivated_superuser_can_no_longer_act(superuser, operator, django_user_model):
+    from accounts.roles import NotAuthorized
+    from employee import service
+
+    django_user_model.objects.create_superuser(username="+79990000067", password="Pass!2345")
+    superuser.is_active = False
+    superuser.save(update_fields=["is_active"])
+
+    with pytest.raises(NotAuthorized):
+        service.set_superuser(actor=superuser, target=operator, is_superuser=True)
