@@ -114,12 +114,24 @@ class CustomerChangedData(BaseModel):
     phone: str = ""
 
 
+STAFF_ROLES = ("restaurant_operator", "restaurant_manager")
+
+
 class AuthzChangedData(BaseModel):
     model_config = ConfigDict(extra="ignore")
     subject_id: int = Field(gt=0)
     authz_version: int = Field(ge=1)
     role_active: bool
+    roles: list[str] = Field(default_factory=list)
     user_active: bool
+
+    @field_validator("roles")
+    @classmethod
+    def _known_roles(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(STAFF_ROLES))
+        if unknown:
+            raise ValueError(f"unknown staff roles: {unknown}")
+        return sorted(set(value))
 
 
 class SnapshotControlData(BaseModel):
