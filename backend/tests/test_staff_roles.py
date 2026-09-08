@@ -19,6 +19,11 @@ ORDER_ROUTES = ["/api/employee/orders", "/api/employee/orders/1"]
 MANAGER_ROUTES = ["/api/employee/inventory", "/api/employee/users", "/api/employee/users/1"]
 
 
+def staff_role_names(user) -> list[str]:
+    user.refresh_from_db()
+    return sorted(g.name for g in user.groups.all())
+
+
 def _staff(username, role):
     user = get_user_model().objects.create_user(username=username, password="Pass!2345")
     if role is not None:
@@ -271,3 +276,46 @@ def test_a_deactivated_superuser_can_no_longer_act(superuser, operator, django_u
 
     with pytest.raises(NotAuthorized):
         service.set_superuser(actor=superuser, target=operator, is_superuser=True)
+
+
+def test_a_stale_superuser_object_cannot_still_assign_a_role(superuser, operator, django_user_model):
+    """the caller holds an ORM object; the rights it was loaded with can be gone by now"""
+    from accounts.models import EmployeeRoleAudit
+    from accounts.roles import NotAuthorized, set_staff_role
+    from orders.models import OrderOutbox
+
+    django_user_model.objects.create_superuser(username="+79990000301", password="Pass!2345")
+    stale = django_user_model.objects.get(pk=superuser.pk)  # loaded while still privileged
+    django_user_model.objects.filter(pk=superuser.pk).update(is_active=False)
+    outbox_before = OrderOutbox.objects.count()
+
+    with pytest.raises(NotAuthorized):
+        set_staff_role(actor=stale, target=operator, role=StaffRole.MANAGER)
+
+    operator.refresh_from_db()
+    assert staff_role_names(operator) == [StaffRole.OPERATOR]
+    assert not EmployeeRoleAudit.objects.filter(target=operator).exists()
+    assert OrderOutbox.objects.count() == outbox_before
+
+
+def test_a_demoted_superuser_object_cannot_still_assign_a_role(superuser, operator, django_user_model):
+    from accounts.roles import NotAuthorized, set_staff_role
+
+    django_user_model.objects.create_superuser(username="+79990000302", password="Pass!2345")
+    stale = django_user_model.objects.get(pk=superuser.pk)
+    django_user_model.objects.filter(pk=superuser.pk).update(is_superuser=False)
+
+    with pytest.raises(NotAuthorized):
+        set_staff_role(actor=stale, target=operator, role=StaffRole.MANAGER)
+
+    assert staff_role_names(operator) == [StaffRole.OPERATOR]
+
+
+def test_the_audit_names_the_actor_as_the_database_knows_them(superuser, operator):
+    from accounts.models import EmployeeRoleAudit
+    from accounts.roles import set_staff_role
+
+    set_staff_role(actor=superuser, target=operator, role=StaffRole.MANAGER)
+
+    entry = EmployeeRoleAudit.objects.filter(target=operator).latest("created_at")
+    assert entry.actor_id == superuser.pk

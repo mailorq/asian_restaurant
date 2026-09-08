@@ -81,11 +81,21 @@ def set_staff_role(*, actor, target, role: str | None):
 
     if role is not None and role not in StaffRole.values:
         raise ValueError(f"unknown staff role: {role}")
+
     # the invariant belongs here, not only in the HTTP decorator: this is the documented single path, and a management command reaches it without passing through a view
-    if not (getattr(actor, "is_superuser", False) and getattr(actor, "is_active", False)):
+    # actor and target are locked in one query by ascending pk, so two callers cannot take them in opposite order
+    actor_pk = getattr(actor, "pk", None)
+    locked = {
+        row.pk: row
+        for row in get_user_model().objects.select_for_update().order_by("pk")
+        .filter(pk__in=[pk for pk in (actor_pk, target.pk) if pk is not None])
+    }
+    # re-read: the rights the caller's object was loaded with may already be gone
+    fresh_actor = locked.get(actor_pk)
+    if not (fresh_actor and fresh_actor.is_superuser and fresh_actor.is_active):
         raise NotAuthorized("only an active superuser may change a staff role")
 
-    user = get_user_model().objects.select_for_update().get(pk=target.pk)
+    user = locked[target.pk]
     staff_groups = [*StaffRole.values, LEGACY_GROUP]
     # compare the membership that is actually there: a broken double grant resolves to no role, and comparing resolved roles would call clearing it a noop
     held = set(user.groups.filter(name__in=staff_groups).values_list("name", flat=True))
@@ -108,7 +118,7 @@ def set_staff_role(*, actor, target, role: str | None):
     else:
         action = EmployeeRoleAudit.Action.REVOKE
     EmployeeRoleAudit.objects.create(
-        actor=actor, target=user, action=action,
+        actor=fresh_actor, target=user, action=action,
         from_role=current or "", to_role=role or "",
     )
     emit_authz(user)
