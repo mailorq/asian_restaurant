@@ -107,11 +107,13 @@ def test_users_list_paginated_with_active_orders_count(client, employee_user, sa
     assert customer["active_orders_count"] == 1
 
 
-def test_user_detail_includes_order_history(client, employee_user, sample_order):
+def test_user_detail_previews_order_history(client, employee_user, sample_order):
     client.force_login(employee_user)
     resp = client.get(f"/api/employee/users/{sample_order.user_id}")
     assert resp.status_code == 200
-    assert resp.json()["orders"][0]["id"] == sample_order.id
+    body = resp.json()
+    assert body["orders_preview"][0]["id"] == sample_order.id
+    assert body["orders_total"] == 1
 
 
 # role management
