@@ -122,7 +122,7 @@ class AuthzChangedData(BaseModel):
     subject_id: int = Field(gt=0)
     authz_version: int = Field(ge=1)
     role_active: bool
-    roles: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list, max_length=len(STAFF_ROLES))
     user_active: bool
 
     @field_validator("roles")
