@@ -21,11 +21,20 @@ def emit_authz(user) -> None:
     )
 
 
+def _other_active_superuser_exists(exclude_pk) -> bool:
+    return (
+        get_user_model().objects.filter(is_superuser=True, is_active=True)
+        .exclude(pk=exclude_pk).exists()
+    )
+
+
 @transaction.atomic
 def set_superuser(actor, target, is_superuser: bool):
     user = get_user_model().objects.select_for_update().get(pk=target.pk)
     if user.is_superuser == is_superuser:
         return user
+    if not is_superuser and not _other_active_superuser_exists(user.pk):
+        raise ValueError("нельзя снять права у последнего активного суперпользователя")
     user.is_superuser = is_superuser
     user.authz_version += 1
     user.save(update_fields=["is_superuser", "authz_version"])
@@ -45,6 +54,8 @@ def set_active(actor, target, active: bool):
     user = get_user_model().objects.select_for_update().get(pk=target.pk)
     if user.is_active == active:
         return user
+    if not active and user.is_superuser and not _other_active_superuser_exists(user.pk):
+        raise ValueError("нельзя деактивировать последнего активного суперпользователя")
     user.is_active = active
     if has_operations_role(user):
         user.authz_version += 1

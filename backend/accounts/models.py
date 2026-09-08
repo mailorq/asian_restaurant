@@ -29,6 +29,7 @@ class EmployeeRoleAudit(models.Model):
     class Action(models.TextChoices):
         GRANT = "grant", "Выдана"
         REVOKE = "revoke", "Отозвана"
+        CHANGE = "change", "Изменена"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+"
@@ -37,6 +38,8 @@ class EmployeeRoleAudit(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="role_audits"
     )
     action = models.CharField(max_length=8, choices=Action.choices)
+    from_role = models.CharField(max_length=32, blank=True)
+    to_role = models.CharField(max_length=32, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

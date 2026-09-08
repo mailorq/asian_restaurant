@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from accounts.roles import StaffRole, set_staff_role
+from accounts.roles import NotAuthorized, StaffRole, set_staff_role
 
 
 class Command(BaseCommand):
@@ -11,6 +11,8 @@ class Command(BaseCommand):
         parser.add_argument("username", help="username / phone of the target user")
         parser.add_argument("--role", choices=sorted(StaffRole.values), default=None,
                             help="omit to clear every staff role")
+        parser.add_argument("--actor", required=True,
+                            help="username of the active superuser taking responsibility")
 
     def handle(self, *args, **options) -> None:
         user_model = get_user_model()
@@ -18,6 +20,13 @@ class Command(BaseCommand):
             user = user_model.objects.get(username=options["username"])
         except user_model.DoesNotExist:
             raise CommandError("пользователь не найден") from None
-        set_staff_role(actor=None, target=user, role=options["role"])
+        try:
+            actor = user_model.objects.get(username=options["actor"])
+        except user_model.DoesNotExist:
+            raise CommandError("actor not found") from None
+        try:
+            set_staff_role(actor=actor, target=user, role=options["role"])
+        except NotAuthorized as exc:
+            raise CommandError(str(exc)) from exc
         held = options["role"] or "none"
         self.stdout.write(self.style.SUCCESS(f"staff role of {user.username} is now {held}"))

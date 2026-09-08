@@ -4,7 +4,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
-from accounts.roles import set_staff_role
+from accounts.roles import NotAuthorized, set_staff_role
 from config.pagination import DEFAULT_PAGE_SIZE, paginate
 from employee.permissions import (
     customers_required,
@@ -133,7 +133,10 @@ def set_role(request, user_id: int, data: RoleIn):
     target = get_user_model().objects.filter(id=user_id).first()
     if target is None:
         raise HttpError(404, "Пользователь не найден")
-    set_staff_role(actor=request.auth, target=target, role=data.role)
+    try:
+        set_staff_role(actor=request.auth, target=target, role=data.role)
+    except NotAuthorized as exc:
+        raise HttpError(403, str(exc)) from exc
     return (
         get_user_model()
         .objects.prefetch_related("groups")

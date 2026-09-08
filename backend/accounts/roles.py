@@ -9,6 +9,10 @@ from django.contrib.auth.models import Group
 from django.db import models, transaction
 
 
+class NotAuthorized(Exception):
+    pass
+
+
 class StaffRole(models.TextChoices):
     OPERATOR = "restaurant_operator", "Оператор"
     MANAGER = "restaurant_manager", "Менеджер"
@@ -36,7 +40,10 @@ def staff_role(user) -> str | None:
     if not getattr(user, "is_authenticated", False):
         return None
     names = {g.name for g in user.groups.all()} & set(StaffRole.values)
-    return sorted(names)[0] if names else None
+    if len(names) != 1:
+        # more than one staff group is a broken grant, not a wider one
+        return None
+    return names.pop()
 
 
 def roles_of(user) -> list[str]:
@@ -74,6 +81,9 @@ def set_staff_role(*, actor, target, role: str | None):
 
     if role is not None and role not in StaffRole.values:
         raise ValueError(f"unknown staff role: {role}")
+    # the invariant belongs here, not only in the HTTP decorator: this is the documented single path, and a management command reaches it without passing through a view
+    if not (getattr(actor, "is_superuser", False) and getattr(actor, "is_active", False)):
+        raise NotAuthorized("only an active superuser may change a staff role")
 
     user = get_user_model().objects.select_for_update().get(pk=target.pk)
     current = staff_role(user)
@@ -87,9 +97,15 @@ def set_staff_role(*, actor, target, role: str | None):
 
     user.authz_version += 1
     user.save(update_fields=["authz_version"])
+    if current and role:
+        action = EmployeeRoleAudit.Action.CHANGE
+    elif role:
+        action = EmployeeRoleAudit.Action.GRANT
+    else:
+        action = EmployeeRoleAudit.Action.REVOKE
     EmployeeRoleAudit.objects.create(
-        actor=actor, target=user,
-        action=EmployeeRoleAudit.Action.GRANT if role else EmployeeRoleAudit.Action.REVOKE,
+        actor=actor, target=user, action=action,
+        from_role=current or "", to_role=role or "",
     )
     emit_authz(user)
     return user
