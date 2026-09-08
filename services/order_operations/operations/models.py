@@ -29,8 +29,9 @@ class EmployeeAuthorization(models.Model):
     subject_id = models.PositiveIntegerField(unique=True)
     authz_version = models.PositiveIntegerField(default=0)
     role_active = models.BooleanField(default=False)
-    # empty while a projection predates roles; the boolean above still answers then
     roles = models.JSONField(default=list, blank=True)
+    # false while identity has never sent roles for this subject; an empty list with this true means "holds none", which is a different answer and must not fall back to the boolean
+    roles_known = models.BooleanField(default=False)
     user_active = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 

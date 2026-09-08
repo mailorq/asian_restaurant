@@ -34,10 +34,10 @@ def _authorized(claims) -> bool:
         return False
     if not (authz and authz.user_active and authz.authz_version == claims.get("authz_version")):
         return False
-    projected = set(authz.roles or [])
-    if not projected:
-        # written before identity carried roles; the boolean is all this projection knows
+    if not authz.roles_known:
+        # identity has never sent roles for this subject; the boolean is all this projection has
         return bool(authz.role_active)
+    projected = set(authz.roles or [])
     # the capability must hold on both sides: a token cannot grant what identity did not
     return bool(projected & set(claims.get("roles") or []))
 

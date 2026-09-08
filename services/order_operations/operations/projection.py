@@ -181,24 +181,33 @@ def _customer_changed(envelope: Envelope, data) -> None:
 
 def _authz_changed(envelope: Envelope, data) -> None:
     incoming = envelope.aggregate.version
+    sent_roles = "roles" in getattr(data, "model_fields_set", set())
+    roles = sorted(set(data.roles)) if sent_roles else []
     existing = EmployeeAuthorization.objects.select_for_update().filter(subject_id=data.subject_id).first()
     if existing:
         if incoming < existing.authz_version:
             projection_events.labels(envelope.event_type, "stale").inc()
             return
         if incoming == existing.authz_version:
-            # same version, same state is an idempotent re-emit; contradictory state is a fault
-            incoming_roles = sorted(getattr(data, "roles", None) or [])
-            if (existing.role_active, existing.user_active, sorted(existing.roles or [])) == (
-                data.role_active, data.user_active, incoming_roles
-            ):
+            same_state = (existing.role_active, existing.user_active) == (
+                data.role_active, data.user_active
+            )
+            # a backfill re-sends a version it already sent, now carrying roles. that single enrichment is allowed, and only while nothing else about the state differs
+            if same_state and sent_roles and not existing.roles_known:
+                EmployeeAuthorization.objects.filter(pk=existing.pk).update(
+                    roles=roles, roles_known=True
+                )
+                projection_events.labels(envelope.event_type, "applied").inc()
+                return
+            known = sorted(existing.roles or [])
+            if same_state and (known == roles or not sent_roles):
                 projection_events.labels(envelope.event_type, "idempotent").inc()
                 return
             raise ProjectionConflict("authz", envelope.aggregate.id, incoming, envelope.event_id)
-    EmployeeAuthorization.objects.update_or_create(
-        subject_id=data.subject_id,
-        defaults={"authz_version": incoming, "role_active": data.role_active, "roles": sorted(getattr(data, "roles", None) or []), "user_active": data.user_active},
-    )
+    defaults = {"authz_version": incoming, "role_active": data.role_active, "user_active": data.user_active}
+    if sent_roles:
+        defaults |= {"roles": roles, "roles_known": True}
+    EmployeeAuthorization.objects.update_or_create(subject_id=data.subject_id, defaults=defaults)
     projection_events.labels(envelope.event_type, "applied").inc()
 
 
