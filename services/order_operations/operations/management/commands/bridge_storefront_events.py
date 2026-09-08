@@ -154,12 +154,16 @@ def _map_data(event_type: str, legacy: dict) -> dict:
             "phone": legacy.get("phone", ""),
         }
     if event_type == EVENT_AUTHZ_CHANGED:
-        return {
+        data = {
             "subject_id": _safe_int(legacy["subject_id"]),
             "authz_version": _safe_int(legacy["authz_version"]),
             "role_active": bool(legacy.get("role_active")),
             "user_active": bool(legacy.get("user_active")),
         }
+        # absent and empty are different answers: one means the sender knows of no role, the other that it predates roles entirely. the contract validates the value
+        if "roles" in legacy:
+            data["roles"] = legacy["roles"]
+        return data
     if event_type == EVENT_SNAPSHOT_CONTROL:
         return {
             "run_id": legacy["run_id"],
