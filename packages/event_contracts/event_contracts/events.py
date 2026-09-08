@@ -133,6 +133,13 @@ class AuthzChangedData(BaseModel):
             raise ValueError(f"unknown staff roles: {unknown}")
         return sorted(set(value))
 
+    @model_validator(mode="after")
+    def _flag_matches_roles(self):
+        # both describe the same fact, so an event carrying both must agree. an event that predates roles carries only the flag and stays valid
+        if "roles" in self.model_fields_set and self.role_active != bool(self.roles):
+            raise ValueError("role_active disagrees with roles")
+        return self
+
 
 class SnapshotControlData(BaseModel):
     model_config = ConfigDict(extra="ignore")
