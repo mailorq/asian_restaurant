@@ -19,7 +19,8 @@ be() { dc exec -T backend "$@"; }
 ops() { dc exec -T operations-api "$@"; }
 bridge_ready() { dc logs operations-bridge 2>&1 | grep -q 'storefront bridge:'; }
 card_projected() { ops python manage.py shell -c "import sys; from operations.models import OperationOrder; sys.exit(0 if OperationOrder.objects.filter(payment_method='card').exists() else 1)"; }
-order_confirmed() { be python manage.py shell -c "import sys; from orders.models import Order; sys.exit(0 if Order.objects.get(idempotency_key='e2e-key').status == 'confirmed' else 1)"; }
+order_confirmed() { be python manage.py shell -c "import sys; from accounts.roles import StaffRole, set_staff_role
+from orders.models import Order; sys.exit(0 if Order.objects.get(idempotency_key='e2e-key').status == 'confirmed' else 1)"; }
 command_succeeded() { ops python manage.py shell -c "import sys; from operations.models import OperationCommand; sys.exit(0 if OperationCommand.objects.filter(idempotency_key='e2e-transition', status='succeeded').exists() else 1)"; }
 
 cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; }
@@ -84,10 +85,11 @@ dc up -d commands-consumer commands-relay >/dev/null
 STAFF=$(be python manage.py shell -c "
 from django.contrib.auth import get_user_model
 from employee import service as employee_service
+from accounts.roles import StaffRole, set_staff_role
 from orders.models import Order
 staff = get_user_model().objects.create_user(username='+79995551111', phone='+79995551111',
                                              password='Pass!2345', customer_version=1)
-staff = employee_service.set_employee_role(actor=staff, target=staff, grant=True)
+staff = set_staff_role(actor=staff, target=staff, role=StaffRole.OPERATOR)
 order = Order.objects.get(idempotency_key='e2e-key')
 print(staff.id, staff.authz_version, order.id)
 " | tail -1 | tr -d '\r')

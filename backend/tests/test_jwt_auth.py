@@ -26,7 +26,7 @@ def test_issue_employee_token_claims(signing, employee_user):
     token, ttl = jwt_service.issue_employee_token(employee_user)
     claims = _decode(token, signing.public_key())
     assert claims["sub"] == str(employee_user.id)
-    assert "restaurant_employee" in claims["roles"]
+    assert "restaurant_manager" in claims["roles"]
     assert claims["authz_version"] == employee_user.authz_version
     assert ttl == 600
 
@@ -61,4 +61,4 @@ def test_employee_token_endpoint_authorization(signing, api, user, employee_user
     body = resp.json()
     assert body["token_type"] == "Bearer" and body["expires_in"] == 600
     claims = _decode(body["token"], signing.public_key())
-    assert "restaurant_employee" in claims["roles"]
+    assert "restaurant_manager" in claims["roles"]

@@ -7,8 +7,8 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from event_contracts import OrderTransitionRequestedData
 
+from accounts.roles import StaffRole, set_staff_role
 from cart import service as cart_service
-from employee import service as employee_service
 from menu.models import Product
 from orders import commands
 from orders import service as order_service
@@ -19,7 +19,7 @@ def _actor():
     account = get_user_model().objects.create_user(
         username="+79990000777", password="Pass!2345", phone="+79990000777"
     )
-    employee_service.set_employee_role(actor=account, target=account, grant=True)
+    set_staff_role(actor=account, target=account, role=StaffRole.MANAGER)
     account.refresh_from_db()
     return account
 

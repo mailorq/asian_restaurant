@@ -123,12 +123,12 @@ def user(db):
 def employee_user(db):
     from django.contrib.auth.models import Group
 
-    from accounts.models import EMPLOYEE_GROUP
+    from accounts.roles import StaffRole
 
     account = get_user_model().objects.create_user(
         username="+79990000010", password="Pass!2345", first_name="Сотрудник"
     )
-    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     account.groups.add(group)
     return account
 

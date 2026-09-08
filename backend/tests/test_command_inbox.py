@@ -4,6 +4,7 @@ import uuid
 import pytest
 from event_contracts import OrderTransitionRequestedData
 
+from accounts.roles import StaffRole, set_staff_role
 from orders import commands
 from orders.models import CommandInbox, Order, OrderOutbox, OrderStatusHistory
 
@@ -40,9 +41,8 @@ def order(user, make_product, seed_cart):
 
 
 def _grant(account):
-    from employee import service as employee_service
 
-    employee_service.set_employee_role(actor=account, target=account, grant=True)
+    set_staff_role(actor=account, target=account, role=StaffRole.MANAGER)
     account.refresh_from_db()
     return account
 
@@ -101,11 +101,10 @@ def test_expired_command_is_rejected_without_touching_the_order(order, employee_
 
 
 def test_actor_revoked_after_creation_is_rejected(order, employee_user):
-    from employee import service as employee_service
 
     actor = _grant(employee_user)
     data = _request(actor, order.id)
-    employee_service.set_employee_role(actor=actor, target=actor, grant=False)
+    set_staff_role(actor=actor, target=actor, role=None)
 
     outcome = _apply(data)
 

@@ -28,7 +28,7 @@ def _post(client, url, payload):
     return client.post(url, data=json.dumps(payload), content_type="application/json")
 
 
-# --- access control -------------------------------------------------------
+# access control
 def test_guest_gets_401(client):
     assert client.get("/api/employee/orders").status_code == 401
 
@@ -56,7 +56,7 @@ def test_me_reports_is_employee(client, employee_user):
     assert client.get("/api/auth/me").json()["is_employee"] is True
 
 
-# --- orders ---------------------------------------------------------------
+# orders
 def test_transition_updates_status_and_emits_event(client, employee_user, sample_order):
     client.force_login(employee_user)
     resp = _post(client, f"/api/employee/orders/{sample_order.id}/transition", {"to_status": "confirmed", "note": "ок"})
@@ -74,7 +74,7 @@ def test_invalid_transition_returns_400(client, employee_user, sample_order):
     assert resp.status_code == 400  # created -> delivered is not allowed
 
 
-# --- inventory ------------------------------------------------------------
+# inventory
 def test_inventory_adjust_records_stock_adjustment(client, employee_user, make_product):
     product = make_product(stock=5)
     client.force_login(employee_user)
@@ -98,7 +98,7 @@ def test_inventory_search(client, employee_user, make_product):
     assert names == ["Рамен"]
 
 
-# --- users ----------------------------------------------------------------
+# users
 def test_users_list_paginated_with_active_orders_count(client, employee_user, sample_order):
     client.force_login(employee_user)
     data = client.get("/api/employee/users?page=1&page_size=50").json()
@@ -114,21 +114,21 @@ def test_user_detail_includes_order_history(client, employee_user, sample_order)
     assert resp.json()["orders"][0]["id"] == sample_order.id
 
 
-# --- role management ------------------------------------------------------
+# role management
 def test_role_change_forbidden_for_employee(client, employee_user, user):
     client.force_login(employee_user)  # employee, but not superuser
-    resp = _post(client, f"/api/employee/users/{user.id}/role", {"grant": True})
+    resp = _post(client, f"/api/employee/users/{user.id}/role", {"role": "restaurant_manager"})
     assert resp.status_code == 403
 
 
 def test_superuser_grants_and_revokes_with_audit(client, superuser, user):
     client.force_login(superuser)
 
-    granted = _post(client, f"/api/employee/users/{user.id}/role", {"grant": True})
+    granted = _post(client, f"/api/employee/users/{user.id}/role", {"role": "restaurant_manager"})
     assert granted.status_code == 200
     assert granted.json()["is_employee"] is True
     assert EmployeeRoleAudit.objects.filter(target=user, actor=superuser, action="grant").exists()
 
-    revoked = _post(client, f"/api/employee/users/{user.id}/role", {"grant": False})
+    revoked = _post(client, f"/api/employee/users/{user.id}/role", {"role": None})
     assert revoked.json()["is_employee"] is False
     assert EmployeeRoleAudit.objects.filter(target=user, action="revoke").exists()

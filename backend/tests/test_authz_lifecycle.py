@@ -8,7 +8,8 @@ from django.core.management import call_command
 from django.test import Client, RequestFactory
 
 from accounts.admin import CustomUserAdmin
-from accounts.models import EMPLOYEE_GROUP, EmployeeRoleAudit, User
+from accounts.models import EmployeeRoleAudit, User
+from accounts.roles import StaffRole, set_staff_role
 from employee import service
 from orders.models import OrderOutbox
 
@@ -30,22 +31,23 @@ def _msg_request(actor):
 # role service: correctness, idempotency, active state
 def test_grant_bumps_version_audits_and_emits(user, employee_user):
     start = user.authz_version
-    service.set_employee_role(actor=employee_user, target=user, grant=True)
+    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)
     user.refresh_from_db()
-    assert user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    assert user.groups.filter(name=StaffRole.MANAGER).exists()
     assert user.authz_version == start + 1
     assert EmployeeRoleAudit.objects.filter(target=user, action="grant").exists()
     row = _authz_rows(user.id).latest("created_at")
     assert row.aggregate_version == user.authz_version
     assert row.payload == {"subject_id": user.id, "authz_version": user.authz_version,
-                           "role_active": True, "user_active": True}
+                           "role_active": True, "roles": [StaffRole.MANAGER],
+                           "user_active": True}
 
 
 def test_repeated_grant_is_a_noop(user, employee_user):
-    service.set_employee_role(actor=employee_user, target=user, grant=True)
+    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)
     user.refresh_from_db()
     v, audits, events = user.authz_version, EmployeeRoleAudit.objects.filter(target=user).count(), _authz_rows(user.id).count()
-    service.set_employee_role(actor=employee_user, target=user, grant=True)  # already granted
+    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)  # already granted
     user.refresh_from_db()
     assert user.authz_version == v
     assert EmployeeRoleAudit.objects.filter(target=user).count() == audits
@@ -54,7 +56,7 @@ def test_repeated_grant_is_a_noop(user, employee_user):
 
 def test_repeated_revoke_of_absent_role_is_a_noop(user, employee_user):
     start = user.authz_version
-    service.set_employee_role(actor=employee_user, target=user, grant=False)  # not a member
+    set_staff_role(actor=employee_user, target=user, role=None)  # not a member
     user.refresh_from_db()
     assert user.authz_version == start
     assert not _authz_rows(user.id).exists()
@@ -82,28 +84,28 @@ def test_deactivating_customer_emits_no_authz(user):
 # Admin: role membership & is_active are not editable in place
 def test_admin_cannot_grant_employee_role(user, superuser):
     ma = CustomUserAdmin(User, dj_admin.site)
-    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.add(group))  # form tries to add
     ma.save_related(_msg_request(superuser), form, [], change=True)
     user.refresh_from_db()
-    assert not user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    assert not user.groups.filter(name=StaffRole.MANAGER).exists()
     assert not EmployeeRoleAudit.objects.filter(target=user).exists()
 
 
 def test_admin_cannot_revoke_employee_role(user, superuser):
-    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     user.groups.add(group)
     ma = CustomUserAdmin(User, dj_admin.site)
     form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.remove(group))  # form tries to remove
     ma.save_related(_msg_request(superuser), form, [], change=True)
     user.refresh_from_db()
-    assert user.groups.filter(name=EMPLOYEE_GROUP).exists()
+    assert user.groups.filter(name=StaffRole.MANAGER).exists()
 
 
 def test_admin_membership_has_no_shared_request_state(user, employee_user, superuser):
     # two independent users through the SAME ModelAdmin singleton must not cross state
     ma = CustomUserAdmin(User, dj_admin.site)
-    group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
+    group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     # employee_user is a member; a form tries to remove it -> must be restored
     form_a = SimpleNamespace(instance=employee_user, save_m2m=lambda: employee_user.groups.remove(group))
     ma.save_related(_msg_request(superuser), form_a, [], change=True)
@@ -112,8 +114,8 @@ def test_admin_membership_has_no_shared_request_state(user, employee_user, super
     ma.save_related(_msg_request(superuser), form_b, [], change=True)
     employee_user.refresh_from_db()
     user.refresh_from_db()
-    assert employee_user.groups.filter(name=EMPLOYEE_GROUP).exists()      # restored
-    assert not user.groups.filter(name=EMPLOYEE_GROUP).exists()           # reverted
+    assert employee_user.groups.filter(name=StaffRole.MANAGER).exists()      # restored
+    assert not user.groups.filter(name=StaffRole.MANAGER).exists()           # reverted
 
 
 def test_admin_is_active_change_routes_through_service(employee_user, superuser):
