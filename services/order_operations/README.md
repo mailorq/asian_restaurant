@@ -95,11 +95,13 @@ docker compose exec operations-db psql -U ops_user -d operations -c \
 ## Auth
 
 Identity/storefront remains the sole owner of employee role and the
-`restaurant_employee` group. Operations does not read `auth_user`/`groups`. Staff
+`restaurant_operator` or `restaurant_manager` role. Operations does not read
+`auth_user`/`groups`. Staff
 exchange their session for a short-lived, RS256-signed JWT (`sub`, `roles`,
 `authz_version`, `jti`, `exp`, `iss=identity`, `aud=operations`) at
 `POST /api/auth/employee-token`; `EmployeeJWTAuth` verifies it against Identity's
-JWKS (`GET /api/auth/jwks`) and requires the `restaurant_employee` role. The actor
+JWKS (`GET /api/auth/jwks`) and requires a staff role that the local authorization
+projection also grants. The actor
 is taken from the verified token, never from a browser-supplied id: an `actor_id` in a request
 body is ignored. `/ops-api/*` is staff-only; only `/health` is open, and the OpenAPI schema is served
 outside production only. A transition is requested
