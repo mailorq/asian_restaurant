@@ -7,7 +7,8 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key, l
 from django.conf import settings
 from jwt.algorithms import RSAAlgorithm
 
-from accounts.models import EMPLOYEE_GROUP, has_operations_role
+from accounts.models import has_operations_role
+from accounts.roles import roles_of
 
 ISSUER = "identity"
 AUDIENCE = "operations"
@@ -43,7 +44,7 @@ def issue_employee_token(user) -> tuple[str, int]:
         "iss": ISSUER,
         "aud": AUDIENCE,
         "sub": str(user.id),
-        "roles": [EMPLOYEE_GROUP],
+        "roles": roles_of(user),
         "authz_version": user.authz_version,
         "jti": uuid.uuid4().hex,
         "iat": now,

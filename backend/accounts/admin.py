@@ -3,9 +3,11 @@ from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import Group
 
 from accounts import service as accounts_service
-from accounts.models import EMPLOYEE_GROUP, User
+from accounts.models import User
+from accounts.roles import LEGACY_GROUP, StaffRole
 
 _PROFILE_FIELDS = {"first_name", "phone"}
+_STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
 
 
 @admin.register(User)
@@ -16,9 +18,9 @@ class CustomUserAdmin(UserAdmin):
     readonly_fields = ("customer_version", "authz_version")
 
     def formfield_for_manytomany(self, db_field, request, **kwargs):
-        # the employee role is not editable here; it changes only via employee.service
+        # staff roles are not editable here; they change only through set_staff_role
         if db_field.name == "groups":
-            kwargs["queryset"] = Group.objects.exclude(name=EMPLOYEE_GROUP)
+            kwargs["queryset"] = Group.objects.exclude(name__in=_STAFF_GROUPS)
         return super().formfield_for_manytomany(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
@@ -53,14 +55,20 @@ class CustomUserAdmin(UserAdmin):
             accounts_service.emit_state(obj)
 
     def save_related(self, request, form, formsets, change):
-        # restaurant_employee membership only changes via employee.service.set_employee_role;
-        # read the pre-save membership from the DB (never instance/self state) and restore it
+        # staff membership only changes via set_staff_role; read the pre-save membership from
+        # the DB (never instance/self state) and restore it
         user = form.instance
-        group, _ = Group.objects.get_or_create(name=EMPLOYEE_GROUP)
-        was_member = bool(user.pk) and User.objects.filter(pk=user.pk, groups=group).exists()
+        before = set()
+        if user.pk:
+            before = set(
+                User.objects.get(pk=user.pk).groups.filter(name__in=_STAFF_GROUPS)
+                .values_list("name", flat=True)
+            )
         super().save_related(request, form, formsets, change)
-        if user.groups.filter(name=EMPLOYEE_GROUP).exists() != was_member:
-            (user.groups.add if was_member else user.groups.remove)(group)
+        after = set(user.groups.filter(name__in=_STAFF_GROUPS).values_list("name", flat=True))
+        if after != before:
+            user.groups.remove(*Group.objects.filter(name__in=after - before))
+            user.groups.add(*Group.objects.filter(name__in=before - after))
             messages.error(request, "Роль сотрудника меняется только через employee API, не в админке")
 
     def has_delete_permission(self, request, obj=None):

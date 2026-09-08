@@ -2,25 +2,30 @@ import functools
 
 from ninja.errors import HttpError
 
-from accounts.models import EMPLOYEE_GROUP
+from accounts.roles import Capability, has_capability, is_staff_member
 
 
 def is_employee(user) -> bool:
-    # is_staff on its own does NOT grant access — only superuser or the group
-    return bool(
-        getattr(user, "is_superuser", False)
-        or user.groups.filter(name=EMPLOYEE_GROUP).exists()
-    )
+    return is_staff_member(user)
 
 
-def employee_required(view):
-    @functools.wraps(view)
-    def wrapper(request, *args, **kwargs):
-        if not is_employee(request.auth):
-            raise HttpError(403, "Доступ только для сотрудников ресторана")
-        return view(request, *args, **kwargs)
+def requires(capability: str):
+    """server side capability check; a frontend role flag only controls what is shown"""
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if not has_capability(request.auth, capability):
+                raise HttpError(403, "Недостаточно прав")
+            return view(request, *args, **kwargs)
 
-    return wrapper
+        return wrapper
+
+    return decorator
+
+
+employee_required = requires(Capability.ORDERS)
+inventory_required = requires(Capability.INVENTORY)
+customers_required = requires(Capability.CUSTOMERS)
 
 
 def superuser_required(view):

@@ -7,9 +7,10 @@ EMPLOYEE_GROUP = "restaurant_employee"
 
 
 def has_operations_role(user) -> bool:
-    # a superuser is an operations employee too; this is the single source of truth for
-    # "may act in Operations", shared by token issuance, authz events and the backfill
-    return bool(user.is_superuser or user.groups.filter(name=EMPLOYEE_GROUP).exists())
+    # shared by token issuance, authz events and the backfill
+    from accounts.roles import is_staff_member
+
+    return is_staff_member(user)
 
 
 class User(AbstractUser):

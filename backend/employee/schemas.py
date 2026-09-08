@@ -1,8 +1,9 @@
 from datetime import datetime
 
 from ninja import Field, Schema
+from pydantic import ConfigDict
 
-from accounts.models import EMPLOYEE_GROUP
+from accounts.roles import StaffRole
 from employee.permissions import is_employee
 from orders.models import ACTIVE_ORDER_STATUSES
 from orders.schemas import OrderOut
@@ -56,7 +57,7 @@ class EmployeeUserOut(Schema):
     @staticmethod
     def resolve_is_employee(obj) -> bool:
         # prefetch friendly (avoids a query per row when groups are prefetched)
-        return obj.is_superuser or any(g.name == EMPLOYEE_GROUP for g in obj.groups.all())
+        return is_employee(obj)
 
     @staticmethod
     def resolve_active_orders_count(obj) -> int:
@@ -95,4 +96,5 @@ class UserDetailOut(Schema):
 
 
 class RoleIn(Schema):
-    grant: bool
+    model_config = ConfigDict(extra="forbid")
+    role: StaffRole | None = None

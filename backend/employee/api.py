@@ -4,9 +4,14 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
+from accounts.roles import set_staff_role
 from config.pagination import DEFAULT_PAGE_SIZE, paginate
-from employee import service
-from employee.permissions import employee_required, superuser_required
+from employee.permissions import (
+    customers_required,
+    employee_required,
+    inventory_required,
+    superuser_required,
+)
 from employee.schemas import (
     AdjustIn,
     EmployeeUserOut,
@@ -67,7 +72,7 @@ def transition_order(request, order_id: int, data: TransitionIn):
 
 # inventory
 @router.get("/inventory", response=list[InventoryItemOut])
-@employee_required
+@inventory_required
 def inventory(request, search: str | None = None):
     qs = Product.objects.all().order_by("category", "name")
     if search:
@@ -76,7 +81,7 @@ def inventory(request, search: str | None = None):
 
 
 @router.post("/inventory/{product_id}/adjust", response=InventoryItemOut)
-@employee_required
+@inventory_required
 def adjust_stock(request, product_id: int, data: AdjustIn):
     product = inventory_service.set_stock(product_id, data.new_quantity, reason=data.reason, staff=request.auth)
     if product is None:
@@ -85,14 +90,14 @@ def adjust_stock(request, product_id: int, data: AdjustIn):
 
 
 @router.get("/inventory/{product_id}/adjustments", response=list[StockAdjustmentOut])
-@employee_required
+@inventory_required
 def stock_adjustments(request, product_id: int):
     return list(StockAdjustment.objects.filter(product_id=product_id).select_related("staff")[:50])
 
 
 # users
 @router.get("/users", response=PagedUsers)
-@employee_required
+@customers_required
 def list_users(request, search: str | None = None, page: int = 1, page_size: int = 20):
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
@@ -114,7 +119,7 @@ def list_users(request, search: str | None = None, page: int = 1, page_size: int
 
 
 @router.get("/users/{user_id}", response=UserDetailOut)
-@employee_required
+@customers_required
 def user_detail(request, user_id: int):
     user = get_user_model().objects.filter(id=user_id).first()
     if user is None:
@@ -128,7 +133,7 @@ def set_role(request, user_id: int, data: RoleIn):
     target = get_user_model().objects.filter(id=user_id).first()
     if target is None:
         raise HttpError(404, "Пользователь не найден")
-    service.set_employee_role(actor=request.auth, target=target, grant=data.grant)
+    set_staff_role(actor=request.auth, target=target, role=data.role)
     return (
         get_user_model()
         .objects.prefetch_related("groups")
