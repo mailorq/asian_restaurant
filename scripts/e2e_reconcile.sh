@@ -89,7 +89,8 @@ from accounts.roles import StaffRole, set_staff_role
 from orders.models import Order
 staff = get_user_model().objects.create_user(username='+79995551111', phone='+79995551111',
                                              password='Pass!2345', customer_version=1)
-staff = set_staff_role(actor=staff, target=staff, role=StaffRole.OPERATOR)
+root = get_user_model().objects.create_superuser(username='+79995559999', password='Pass!2345')
+staff = set_staff_role(actor=root, target=staff, role=StaffRole.OPERATOR)
 order = Order.objects.get(idempotency_key='e2e-key')
 print(staff.id, staff.authz_version, order.id)
 " | tail -1 | tr -d '\r')

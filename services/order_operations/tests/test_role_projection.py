@@ -45,7 +45,7 @@ def _token(keypair, roles, sub=SUBJECT, version=VERSION):
 def _projected(roles, version=VERSION, active=True):
     return EmployeeAuthorization.objects.create(
         subject_id=SUBJECT, authz_version=version, role_active=bool(roles),
-        roles=roles, user_active=active,
+        roles=roles, roles_known=True, user_active=active,
     )
 
 
@@ -94,31 +94,18 @@ def test_a_stale_authorization_version_is_refused(keypair):
 def test_an_event_without_roles_still_authorizes_the_old_way(keypair):
     """a projection written before roles existed must keep working until the backfill lands"""
     EmployeeAuthorization.objects.create(
-        subject_id=SUBJECT, authz_version=VERSION, role_active=True, roles=[], user_active=True
+        subject_id=SUBJECT, authz_version=VERSION, role_active=True,
+        roles=[], roles_known=False, user_active=True,
     )
 
     assert _get(keypair, [MANAGER]).status_code == 200
 
 
-def test_the_projection_stores_the_roles_the_event_carried():
-    from operations import projection
-    from operations.models import EmployeeAuthorization as EA
+def test_holding_no_role_is_not_the_same_as_never_having_been_told(keypair):
+    """an empty list from identity is an answer; the boolean must not override it"""
+    EmployeeAuthorization.objects.create(
+        subject_id=SUBJECT, authz_version=VERSION, role_active=True,
+        roles=[], roles_known=True, user_active=True,
+    )
 
-    class _Agg:
-        id = str(SUBJECT)
-        version = VERSION
-
-    class _Env:
-        aggregate = _Agg()
-        event_type = "identity.authz_changed.v1"
-        event_id = "e-1"
-
-    class _Data:
-        subject_id = SUBJECT
-        role_active = True
-        roles = [OPERATOR]
-        user_active = True
-
-    projection._authz_changed(_Env(), _Data())
-
-    assert EA.objects.get(subject_id=SUBJECT).roles == [OPERATOR]
+    assert _get(keypair, [MANAGER]).status_code == 401

@@ -149,3 +149,66 @@ def test_the_backfill_covers_every_role_not_just_the_legacy_group(operator, mana
         for row in OrderOutbox.objects.filter(event_type="identity.authz_changed")
     }
     assert {operator.id, manager.id, superuser.id} <= emitted, "an operator would never be projected"
+
+
+def test_only_an_active_superuser_may_change_a_role(operator, manager):
+    from accounts.roles import NotAuthorized, set_staff_role
+
+    for actor in (manager, None):
+        with pytest.raises(NotAuthorized):
+            set_staff_role(actor=actor, target=operator, role=StaffRole.MANAGER)
+
+    manager.is_superuser = True
+    manager.is_active = False
+    manager.save(update_fields=["is_superuser", "is_active"])
+    with pytest.raises(NotAuthorized):
+        set_staff_role(actor=manager, target=operator, role=StaffRole.MANAGER)
+
+    operator.refresh_from_db()
+    assert StaffRole.MANAGER not in [g.name for g in operator.groups.all()]
+
+
+def test_holding_two_roles_grants_nothing(operator):
+    from django.contrib.auth.models import Group
+
+    from accounts.roles import Capability, has_capability, staff_role
+
+    group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
+    operator.groups.add(group)
+
+    assert staff_role(operator) is None, "an ambiguous membership must not resolve to a role"
+    assert not has_capability(operator, Capability.ORDERS)
+
+
+def test_the_last_active_superuser_cannot_lock_everyone_out(superuser):
+    from employee import service
+
+    with pytest.raises(ValueError):
+        service.set_superuser(actor=superuser, target=superuser, is_superuser=False)
+    with pytest.raises(ValueError):
+        service.set_active(actor=superuser, target=superuser, active=False)
+
+    superuser.refresh_from_db()
+    assert superuser.is_superuser and superuser.is_active
+
+
+def test_a_second_superuser_may_still_be_demoted(superuser, django_user_model):
+    from employee import service
+
+    other = django_user_model.objects.create_superuser(username="+79990000077", password="Pass!2345")
+
+    service.set_superuser(actor=superuser, target=other, is_superuser=False)
+
+    other.refresh_from_db()
+    assert other.is_superuser is False
+
+
+def test_the_audit_records_what_the_role_changed_from_and_to(superuser, operator):
+    from accounts.models import EmployeeRoleAudit
+    from accounts.roles import set_staff_role
+
+    set_staff_role(actor=superuser, target=operator, role=StaffRole.MANAGER)
+
+    entry = EmployeeRoleAudit.objects.filter(target=operator).latest("created_at")
+    assert (entry.from_role, entry.to_role) == (StaffRole.OPERATOR, StaffRole.MANAGER)
+    assert entry.action == EmployeeRoleAudit.Action.CHANGE

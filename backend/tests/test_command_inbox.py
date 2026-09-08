@@ -2,9 +2,10 @@ import datetime as dt
 import uuid
 
 import pytest
+from django.contrib.auth.models import Group
 from event_contracts import OrderTransitionRequestedData
 
-from accounts.roles import StaffRole, set_staff_role
+from accounts.roles import StaffRole
 from orders import commands
 from orders.models import CommandInbox, Order, OrderOutbox, OrderStatusHistory
 
@@ -42,7 +43,9 @@ def order(user, make_product, seed_cart):
 
 def _grant(account):
 
-    set_staff_role(actor=account, target=account, role=StaffRole.MANAGER)
+    account.groups.add(Group.objects.get_or_create(name=StaffRole.MANAGER)[0])
+    account.authz_version += 1
+    account.save(update_fields=["authz_version"])
     account.refresh_from_db()
     return account
 
@@ -104,7 +107,9 @@ def test_actor_revoked_after_creation_is_rejected(order, employee_user):
 
     actor = _grant(employee_user)
     data = _request(actor, order.id)
-    set_staff_role(actor=actor, target=actor, role=None)
+    actor.groups.clear()
+    actor.authz_version += 1
+    actor.save(update_fields=["authz_version"])
 
     outcome = _apply(data)
 

@@ -4,10 +4,11 @@ import uuid
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.db import connection
 from event_contracts import OrderTransitionRequestedData
 
-from accounts.roles import StaffRole, set_staff_role
+from accounts.roles import StaffRole
 from cart import service as cart_service
 from menu.models import Product
 from orders import commands
@@ -19,7 +20,9 @@ def _actor():
     account = get_user_model().objects.create_user(
         username="+79990000777", password="Pass!2345", phone="+79990000777"
     )
-    set_staff_role(actor=account, target=account, role=StaffRole.MANAGER)
+    account.groups.add(Group.objects.get_or_create(name=StaffRole.MANAGER)[0])
+    account.authz_version += 1
+    account.save(update_fields=["authz_version"])
     account.refresh_from_db()
     return account
 

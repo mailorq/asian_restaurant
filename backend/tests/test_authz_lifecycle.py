@@ -29,9 +29,9 @@ def _msg_request(actor):
 
 
 # role service: correctness, idempotency, active state
-def test_grant_bumps_version_audits_and_emits(user, employee_user):
+def test_grant_bumps_version_audits_and_emits(user, superuser):
     start = user.authz_version
-    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)
+    set_staff_role(actor=superuser, target=user, role=StaffRole.MANAGER)
     user.refresh_from_db()
     assert user.groups.filter(name=StaffRole.MANAGER).exists()
     assert user.authz_version == start + 1
@@ -43,20 +43,20 @@ def test_grant_bumps_version_audits_and_emits(user, employee_user):
                            "user_active": True}
 
 
-def test_repeated_grant_is_a_noop(user, employee_user):
-    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)
+def test_repeated_grant_is_a_noop(user, superuser):
+    set_staff_role(actor=superuser, target=user, role=StaffRole.MANAGER)
     user.refresh_from_db()
     v, audits, events = user.authz_version, EmployeeRoleAudit.objects.filter(target=user).count(), _authz_rows(user.id).count()
-    set_staff_role(actor=employee_user, target=user, role=StaffRole.MANAGER)  # already granted
+    set_staff_role(actor=superuser, target=user, role=StaffRole.MANAGER)  # already granted
     user.refresh_from_db()
     assert user.authz_version == v
     assert EmployeeRoleAudit.objects.filter(target=user).count() == audits
     assert _authz_rows(user.id).count() == events
 
 
-def test_repeated_revoke_of_absent_role_is_a_noop(user, employee_user):
+def test_repeated_revoke_of_absent_role_is_a_noop(user, superuser):
     start = user.authz_version
-    set_staff_role(actor=employee_user, target=user, role=None)  # not a member
+    set_staff_role(actor=superuser, target=user, role=None)  # not a member
     user.refresh_from_db()
     assert user.authz_version == start
     assert not _authz_rows(user.id).exists()
@@ -138,7 +138,9 @@ def test_admin_is_superuser_change_routes_through_service(user, superuser):
     assert _authz_rows(user.id).latest("created_at").payload["role_active"] is True
 
 
-def test_revoking_superuser_emits_revocation(superuser, employee_user):
+def test_revoking_superuser_emits_revocation(superuser, employee_user, django_user_model):
+    # someone has to be left holding the keys, so the guard against locking everyone out does not fire on what this test is actually about
+    django_user_model.objects.create_superuser(username="+79990000088", password="Pass!2345")
     start = superuser.authz_version
     service.set_superuser(actor=employee_user, target=superuser, is_superuser=False)
     superuser.refresh_from_db()
