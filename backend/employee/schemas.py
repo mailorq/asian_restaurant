@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import StrEnum
 
 from ninja import Field, Schema
 from pydantic import ConfigDict
@@ -6,7 +7,6 @@ from pydantic import ConfigDict
 from accounts.roles import StaffRole
 from employee.permissions import is_employee
 from orders.models import ACTIVE_ORDER_STATUSES
-from orders.schemas import OrderOut
 
 
 class TransitionIn(Schema):
@@ -74,13 +74,28 @@ class PagedUsers(Schema):
     page_size: int
 
 
+ORDERS_PREVIEW = 5
+
+
+class CustomerOrderPreviewOut(Schema):
+    id: int
+    status: str
+    total: float
+    created_at: datetime
+
+    @staticmethod
+    def resolve_total(obj) -> float:
+        return float(obj.total)
+
+
 class UserDetailOut(Schema):
     id: int
     username: str
     name: str
     phone: str | None
     is_employee: bool
-    orders: list[OrderOut]
+    orders_total: int
+    orders_preview: list[CustomerOrderPreviewOut]
 
     @staticmethod
     def resolve_name(obj) -> str:
@@ -90,9 +105,23 @@ class UserDetailOut(Schema):
     def resolve_is_employee(obj) -> bool:
         return is_employee(obj)
 
-    @staticmethod
-    def resolve_orders(obj):
-        return obj.orders.select_related("delivery_address").prefetch_related("items").order_by("-created_at")
+
+class PagedCustomerOrders(Schema):
+    items: list[CustomerOrderPreviewOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class OrderScope(StrEnum):
+    ACTIVE = "active"
+    HISTORY = "history"
+    ALL = "all"
+
+
+class OrderSort(StrEnum):
+    NEWEST = "created_at_desc"
+    OLDEST = "created_at_asc"
 
 
 class RoleIn(Schema):

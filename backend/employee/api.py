@@ -13,9 +13,13 @@ from employee.permissions import (
     superuser_required,
 )
 from employee.schemas import (
+    ORDERS_PREVIEW,
     AdjustIn,
     EmployeeUserOut,
     InventoryItemOut,
+    OrderScope,
+    OrderSort,
+    PagedCustomerOrders,
     PagedUsers,
     RoleIn,
     StockAdjustmentOut,
@@ -29,6 +33,8 @@ from orders.models import ACTIVE_ORDER_STATUSES, Order
 from orders.schemas import OrderOut, PagedOrders
 
 router = Router(tags=["employee"], auth=django_auth)
+
+HISTORY_MAX_PAGE_SIZE = 50
 
 
 def _orders_qs():
@@ -121,10 +127,41 @@ def list_users(request, search: str | None = None, page: int = 1, page_size: int
 @router.get("/users/{user_id}", response=UserDetailOut)
 @customers_required
 def user_detail(request, user_id: int):
-    user = get_user_model().objects.filter(id=user_id).first()
+    user = (
+        get_user_model().objects
+        .annotate(orders_total=Count("orders"))
+        .filter(id=user_id)
+        .first()
+    )
     if user is None:
         raise HttpError(404, "Пользователь не найден")
+    user.orders_preview = _customer_orders(user_id)[:ORDERS_PREVIEW]
     return user
+
+
+def _customer_orders(user_id: int, scope: OrderScope = OrderScope.ALL, sort: OrderSort = OrderSort.NEWEST):
+    """
+    one ordering for both the preview and the paged history
+
+    id breaks ties so a page boundary cannot repeat or skip a row, and nothing here selects
+    related rows: the shape returned carries no items and no address
+    """
+    orders = Order.objects.filter(user_id=user_id)
+    if scope is OrderScope.ACTIVE:
+        orders = orders.filter(status__in=ACTIVE_ORDER_STATUSES)
+    elif scope is OrderScope.HISTORY:
+        orders = orders.exclude(status__in=ACTIVE_ORDER_STATUSES)
+    ascending = sort is OrderSort.OLDEST
+    return orders.order_by("created_at", "id") if ascending else orders.order_by("-created_at", "-id")
+
+
+@router.get("/users/{user_id}/orders", response=PagedCustomerOrders)
+@customers_required
+def user_orders(request, user_id: int, scope: OrderScope = OrderScope.ALL, sort: OrderSort = OrderSort.NEWEST, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE):
+    if not get_user_model().objects.filter(id=user_id).exists():
+        raise HttpError(404, "Пользователь не найден")
+    return paginate(_customer_orders(user_id, scope, sort), page, page_size,
+                    max_page_size=HISTORY_MAX_PAGE_SIZE)
 
 
 @router.post("/users/{user_id}/role", response=EmployeeUserOut)
