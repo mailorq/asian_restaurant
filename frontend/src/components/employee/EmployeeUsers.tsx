@@ -10,11 +10,29 @@ import {
   useUserDetail,
   type CustomerOrderPreview,
   type CustomerOrderScope,
+  type CustomerOrderSort,
   type EmployeeUser,
+  type StaffRole,
 } from "../../api/employee";
 import { ORDER_STATUS, formatOrderDate } from "../../api/orders";
 import { formatPrice } from "../../lib/menu";
 import { formatUaPhone } from "../../lib/phone";
+
+const ROLE_LABEL: Record<StaffRole, string> = {
+  restaurant_operator: "Оператор",
+  restaurant_manager: "Менеджер",
+};
+
+const ROLE_CHOICES: { value: StaffRole | null; label: string }[] = [
+  { value: "restaurant_operator", label: "Оператор" },
+  { value: "restaurant_manager", label: "Менеджер" },
+  { value: null, label: "Без роли" },
+];
+
+const SORTS: { value: CustomerOrderSort; label: string }[] = [
+  { value: "created_at_desc", label: "Сначала новые" },
+  { value: "created_at_asc", label: "Сначала старые" },
+];
 
 const SCOPES: { value: CustomerOrderScope; label: string }[] = [
   { value: "all", label: "Все" },
@@ -41,31 +59,54 @@ function OrderRow({ order }: { order: CustomerOrderPreview }) {
 function CustomerOrders({ userId, total }: { userId: number; total: number }) {
   const [page, setPage] = useState(1);
   const [scope, setScope] = useState<CustomerOrderScope>("all");
-  const { data, isLoading } = useCustomerOrders(userId, page, scope);
+  const [sort, setSort] = useState<CustomerOrderSort>("created_at_desc");
+  const { data, isLoading, isError, refetch } = useCustomerOrders(userId, page, scope, sort);
   const pageSize = data?.page_size ?? 20;
   const totalPages = Math.max(1, Math.ceil((data?.total ?? total) / pageSize));
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap gap-2">
-        {SCOPES.map((s) => (
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {SCOPES.map((option) => (
           <button
-            key={s.value}
+            key={option.value}
             onClick={() => {
-              setScope(s.value);
+              setScope(option.value);
               setPage(1);
             }}
             className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              scope === s.value
+              scope === option.value
                 ? "bg-primary text-primary-contrast"
                 : "border border-border text-muted hover:text-text"
             }`}
           >
-            {s.label}
+            {option.label}
           </button>
         ))}
+        <select
+          value={sort}
+          onChange={(e) => {
+            setSort(e.target.value as CustomerOrderSort);
+            setPage(1);
+          }}
+          aria-label="Сортировка"
+          className="ml-auto rounded-full border border-border bg-transparent px-3 py-1 text-xs text-muted"
+        >
+          {SORTS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
-      {isLoading || !data ? (
+      {isError ? (
+        <div className="rounded-xl border border-border py-8 text-center">
+          <p className="text-sm text-muted">Не удалось загрузить историю.</p>
+          <button onClick={() => refetch()} className="mt-2 text-sm font-medium text-accent hover:underline">
+            Повторить
+          </button>
+        </div>
+      ) : isLoading || !data ? (
         <div className="h-24 animate-pulse rounded-xl bg-surface-2" />
       ) : data.items.length === 0 ? (
         <p className="text-sm text-muted">Заказов нет</p>
@@ -166,12 +207,17 @@ export function EmployeeUsers() {
     setPage(1);
   }
 
-  function toggleRole(u: EmployeeUser) {
+  function assignRole(u: EmployeeUser, role: StaffRole | null) {
+    if (role === u.staff_role) return;
     setRole.mutate(
-      { userId: u.id, grant: !u.is_employee },
+      { userId: u.id, role },
       {
         onSuccess: () =>
-          notify(u.is_employee ? `Роль отозвана: ${u.name || u.username}` : `Роль выдана: ${u.name || u.username}`),
+          notify(
+            role
+              ? `${ROLE_LABEL[role]}: ${u.name || u.username}`
+              : `Роль отозвана: ${u.name || u.username}`,
+          ),
         onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить роль", "error"),
       },
     );
@@ -220,9 +266,9 @@ export function EmployeeUsers() {
                 >
                   <p className="truncate font-medium">
                     {u.name || u.username}
-                    {u.is_employee && (
+                    {(u.is_superuser || u.staff_role) && (
                       <span className="ml-2 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent">
-                        сотрудник
+                        {u.is_superuser ? "суперпользователь" : ROLE_LABEL[u.staff_role!]}
                       </span>
                     )}
                   </p>
@@ -233,18 +279,23 @@ export function EmployeeUsers() {
                 <span className="text-xs text-muted">
                   активных заказов: <span className="tnum font-semibold text-text">{u.active_orders_count}</span>
                 </span>
-                {me?.is_superuser && (
-                  <button
-                    onClick={() => toggleRole(u)}
-                    disabled={setRole.isPending}
-                    className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
-                      u.is_employee
-                        ? "border border-danger/40 text-danger hover:bg-danger/10"
-                        : "border border-border text-muted hover:border-accent hover:text-accent"
-                    }`}
-                  >
-                    {u.is_employee ? "Отозвать роль" : "Выдать роль"}
-                  </button>
+                {me?.is_superuser && !u.is_superuser && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {ROLE_CHOICES.map((choice) => (
+                      <button
+                        key={choice.value ?? "none"}
+                        onClick={() => assignRole(u, choice.value)}
+                        disabled={setRole.isPending}
+                        className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                          u.staff_role === choice.value
+                            ? "bg-primary text-primary-contrast"
+                            : "border border-border text-muted hover:border-accent hover:text-accent"
+                        }`}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </li>
             ))}

@@ -27,6 +27,8 @@ export interface EmployeeUser {
   name: string;
   phone: string | null;
   is_employee: boolean;
+  is_superuser: boolean;
+  staff_role: StaffRole | null;
   active_orders_count: number;
   date_joined: string;
 }
@@ -37,6 +39,8 @@ export interface PagedUsers {
   page: number;
   page_size: number;
 }
+
+export type StaffRole = "restaurant_operator" | "restaurant_manager";
 
 export interface CustomerOrderPreview {
   id: number;
@@ -51,6 +55,8 @@ export interface UserDetail {
   name: string;
   phone: string | null;
   is_employee: boolean;
+  is_superuser: boolean;
+  staff_role: StaffRole | null;
   orders_total: number;
   orders_preview: CustomerOrderPreview[];
 }
@@ -63,6 +69,7 @@ export interface PagedCustomerOrders {
 }
 
 export type CustomerOrderScope = "active" | "history" | "all";
+export type CustomerOrderSort = "created_at_desc" | "created_at_asc";
 
 // --- orders ---------------------------------------------------------------
 export function useEmployeeOrders(status: OrderStatus | "", page = 1, pageSize = 20) {
@@ -140,14 +147,15 @@ export function useCustomerOrders(
   userId: number | null,
   page: number,
   scope: CustomerOrderScope = "all",
+  sort: CustomerOrderSort = "created_at_desc",
   enabled = true,
   pageSize = 20,
 ) {
   return useQuery({
-    queryKey: ["employee", "user", userId, "orders", page, scope, pageSize],
+    queryKey: ["employee", "user", userId, "orders", page, scope, sort, pageSize],
     queryFn: () =>
       api<PagedCustomerOrders>(
-        `/employee/users/${userId}/orders?page=${page}&page_size=${pageSize}&scope=${scope}`,
+        `/employee/users/${userId}/orders?page=${page}&page_size=${pageSize}&scope=${scope}&sort=${sort}`,
       ),
     enabled: enabled && userId !== null,
   });
@@ -156,10 +164,10 @@ export function useCustomerOrders(
 export function useSetRole() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { userId: number; grant: boolean }) =>
+    mutationFn: (vars: { userId: number; role: StaffRole | null }) =>
       api<EmployeeUser>(`/employee/users/${vars.userId}/role`, {
         method: "POST",
-        body: JSON.stringify({ grant: vars.grant }),
+        body: JSON.stringify({ role: vars.role }),
       }),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["employee", "users"] });

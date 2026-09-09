@@ -9,10 +9,11 @@ import { EmployeeUsers } from "../components/employee/EmployeeUsers";
 
 type Tab = "orders" | "inventory" | "users";
 
-const TABS: { value: Tab; label: string; icon: string }[] = [
+// the server refuses these regardless; hiding them only spares a guaranteed 403
+const TABS: { value: Tab; label: string; icon: string; managerOnly?: boolean }[] = [
   { value: "orders", label: "Заказы", icon: "cart" },
-  { value: "inventory", label: "Инвентарь", icon: "bowl" },
-  { value: "users", label: "Пользователи", icon: "user" },
+  { value: "inventory", label: "Инвентарь", icon: "bowl", managerOnly: true },
+  { value: "users", label: "Пользователи", icon: "user", managerOnly: true },
 ];
 
 function Centered({ children }: { children: React.ReactNode }) {
@@ -30,6 +31,8 @@ export function EmployeePage() {
   const navigate = useUI((s) => s.navigate);
   const openModal = useUI((s) => s.openModal);
   const [tab, setTab] = useState<Tab>("orders");
+  const isManager = Boolean(user?.is_superuser || user?.staff_role === "restaurant_manager");
+  const tabs = TABS.filter((t) => !t.managerOnly || isManager);
 
   if (!ready) {
     return (
@@ -98,7 +101,7 @@ export function EmployeePage() {
 
       <nav className="border-b border-border">
         <div className="mx-auto flex max-w-5xl gap-1 px-4 sm:px-6">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.value}
               onClick={() => setTab(t.value)}
