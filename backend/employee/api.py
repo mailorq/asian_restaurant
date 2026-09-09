@@ -143,8 +143,10 @@ def _customer_orders(user_id: int, scope: OrderScope = OrderScope.ALL, sort: Ord
     """
     one ordering for both the preview and the paged history
 
-    id breaks ties so a page boundary cannot repeat or skip a row, and nothing here selects
-    related rows: the shape returned carries no items and no address
+    id breaks ties on equal timestamps, so a page boundary is defined for a fixed set. offset
+    paging still shifts when the set changes underneath, which a cursor would solve if strict
+    continuity is ever needed. nothing here selects related rows: the shape carries no items
+    and no address
     """
     orders = Order.objects.filter(user_id=user_id)
     if scope is OrderScope.ACTIVE:
@@ -170,6 +172,9 @@ def set_role(request, user_id: int, data: RoleIn):
     target = get_user_model().objects.filter(id=user_id).first()
     if target is None:
         raise HttpError(404, "Пользователь не найден")
+    if target.is_superuser:
+        # a staff role adds nothing to a superuser, and clearing one would report a revoke while every right stays
+        raise HttpError(409, "Роль суперпользователя меняется отдельно")
     try:
         set_staff_role(actor=request.auth, target=target, role=data.role)
     except NotAuthorized as exc:

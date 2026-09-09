@@ -20,10 +20,18 @@ class UserOut(Schema):
     name: str = ""
     is_employee: bool = False
     is_superuser: bool = False
+    # the panel hides tabs it cannot use; the server still refuses them either way
+    staff_role: str | None = None
 
     @staticmethod
     def resolve_name(obj) -> str:
         return obj.first_name
+
+    @staticmethod
+    def resolve_staff_role(obj):
+        from accounts.roles import staff_role
+
+        return staff_role(obj)
 
     @staticmethod
     def resolve_is_employee(obj) -> bool:

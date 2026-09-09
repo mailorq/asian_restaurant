@@ -4,7 +4,7 @@ from enum import StrEnum
 from ninja import Field, Schema
 from pydantic import ConfigDict
 
-from accounts.roles import StaffRole
+from accounts.roles import StaffRole, staff_role
 from employee.permissions import is_employee
 from orders.models import ACTIVE_ORDER_STATUSES
 
@@ -47,6 +47,8 @@ class EmployeeUserOut(Schema):
     name: str
     phone: str | None
     is_employee: bool
+    is_superuser: bool
+    staff_role: StaffRole | None
     active_orders_count: int
     date_joined: datetime
 
@@ -58,6 +60,10 @@ class EmployeeUserOut(Schema):
     def resolve_is_employee(obj) -> bool:
         # prefetch friendly (avoids a query per row when groups are prefetched)
         return is_employee(obj)
+
+    @staticmethod
+    def resolve_staff_role(obj):
+        return staff_role(obj)
 
     @staticmethod
     def resolve_active_orders_count(obj) -> int:
@@ -94,6 +100,8 @@ class UserDetailOut(Schema):
     name: str
     phone: str | None
     is_employee: bool
+    is_superuser: bool
+    staff_role: StaffRole | None
     orders_total: int
     orders_preview: list[CustomerOrderPreviewOut]
 
@@ -104,6 +112,10 @@ class UserDetailOut(Schema):
     @staticmethod
     def resolve_is_employee(obj) -> bool:
         return is_employee(obj)
+
+    @staticmethod
+    def resolve_staff_role(obj):
+        return staff_role(obj)
 
 
 class PagedCustomerOrders(Schema):
@@ -126,4 +138,5 @@ class OrderSort(StrEnum):
 
 class RoleIn(Schema):
     model_config = ConfigDict(extra="forbid")
-    role: StaffRole | None = None
+    # required but nullable: an empty body must not quietly mean "revoke"
+    role: StaffRole | None
