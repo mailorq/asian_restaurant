@@ -148,11 +148,18 @@ function CustomerOrders({ userId, total }: { userId: number; total: number }) {
 }
 
 function UserDetailModal({ userId, onClose }: { userId: number; onClose: () => void }) {
-  const { data, isLoading } = useUserDetail(userId);
+  const { data, isLoading, isError, refetch } = useUserDetail(userId);
   const [showAll, setShowAll] = useState(false);
   return (
     <Modal title={data ? data.name || data.username : "Пользователь"} onClose={onClose}>
-      {isLoading || !data ? (
+      {isError ? (
+        <div className="rounded-xl border border-border py-10 text-center">
+          <p className="text-sm text-muted">Не удалось загрузить клиента.</p>
+          <button onClick={() => refetch()} className="mt-2 text-sm font-medium text-accent hover:underline">
+            Повторить
+          </button>
+        </div>
+      ) : isLoading || !data ? (
         <div className="h-40 animate-pulse rounded-xl bg-surface-2" />
       ) : (
         <div>
@@ -209,6 +216,7 @@ export function EmployeeUsers() {
 
   function assignRole(u: EmployeeUser, role: StaffRole | null) {
     if (role === u.staff_role) return;
+    if (role === null && !confirm(`Отозвать роль у ${u.name || u.username}?`)) return;
     setRole.mutate(
       { userId: u.id, role },
       {
@@ -289,7 +297,9 @@ export function EmployeeUsers() {
                         className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
                           u.staff_role === choice.value
                             ? "bg-primary text-primary-contrast"
-                            : "border border-border text-muted hover:border-accent hover:text-accent"
+                            : choice.value === null
+                              ? "border border-danger/40 text-danger hover:bg-danger/10"
+                              : "border border-border text-muted hover:border-accent hover:text-accent"
                         }`}
                       >
                         {choice.label}
