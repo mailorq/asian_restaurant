@@ -2,15 +2,31 @@
 
 ## Порядок релиза (production)
 
+Миграции — шаг развёртывания, а не действие рантайма: их выполняют одноразовые сервисы
+`storefront-migrate` и `operations-migrate`, и остальные контейнеры стартуют только после того,
+как те завершились с кодом 0. Запускать `manage.py migrate` внутри рабочего контейнера не нужно:
+это второй путь миграции мимо развёртывания.
+
 ```bash
-# 1. применить миграции схемы
-python manage.py migrate --noinput
+# 1. применить миграции схемы обеим базам, до старта рантайма
+docker compose up --exit-code-from storefront-migrate storefront-migrate
+docker compose up --exit-code-from operations-migrate operations-migrate
 
 # 2. обязательно наполнить/обновить каталог и остатки
 python manage.py seed_menu
 
 # 3. собрать статику (если нужно)
 python manage.py collectstatic --noinput
+```
+
+### Если рантайм не стартует
+
+Сервисы ждут `Exited (0)` от своего миграционного шага, поэтому упавшая миграция выглядит как
+незапустившийся стек:
+
+```bash
+docker compose ps --all
+docker compose logs storefront-migrate operations-migrate
 ```
 
 ### Почему seed_menu обязателен

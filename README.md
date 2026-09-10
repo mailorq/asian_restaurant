@@ -40,11 +40,11 @@
 # 1. окружение
 cp .env.example .env            # заполнить секреты
 
-# 2. поднять стек
+# 2. поднять стек: миграции выполнят одноразовые storefront-migrate и operations-migrate,
+# остальные сервисы стартуют только после того, как те завершатся с кодом 0
 docker compose up -d
 
-# 3. миграции и каталог (обязательно, иначе остатки = 0)
-docker compose exec backend python manage.py migrate
+# 3. каталог и остатки (обязательно, иначе остатки = 0)
 docker compose exec backend python manage.py seed_menu
 
 # 4. администратор и первый сотрудник

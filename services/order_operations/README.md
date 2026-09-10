@@ -62,8 +62,8 @@ and records `outcome="conflict"` rather than overwriting. Re-delivery of the sam
 # from the repo root
 docker compose up -d --build operations-db operations-api operations-consumer
 
-# migrate + inspect
-docker compose exec operations-api python manage.py migrate
+# migrations are their own one-shot service; inspect the schema it applied
+docker compose logs operations-migrate
 docker compose exec operations-db psql -U ops_user -d operations -c "\dt"
 
 # tests

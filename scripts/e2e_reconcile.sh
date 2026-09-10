@@ -79,7 +79,7 @@ echo "== assert projected payment method is 'card' BEFORE reconciling =="
 wait_for card-projected card_projected
 
 echo "== transition command: operations -> relay -> storefront -> outcome -> operations =="
-# started only now: both run on the backend image and would migrate an empty database alongside it
+# started only now: the command path is exercised after the projection has been asserted
 dc up -d commands-consumer commands-relay >/dev/null
 
 STAFF=$(be python manage.py shell -c "
