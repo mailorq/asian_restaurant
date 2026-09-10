@@ -189,3 +189,65 @@ def test_the_session_endpoint_reports_an_operator_exactly(api, django_user_model
     assert body["staff_role"] == StaffRole.OPERATOR
     assert body["is_superuser"] is False
     assert body["is_employee"] is True
+
+
+def _group_names(user):
+    user.refresh_from_db()
+    return sorted(g.name for g in user.groups.all())
+
+
+def test_promotion_clears_the_staff_role_it_replaces(superuser, target):
+    from accounts.roles import StaffRole
+    from employee import service
+    from orders.models import OrderOutbox
+
+    target.groups.add(Group.objects.get_or_create(name=StaffRole.MANAGER)[0])
+    version_before = target.authz_version
+
+    service.set_superuser(actor=superuser, target=target, is_superuser=True)
+
+    assert _group_names(target) == [], "the group could never be removed afterwards"
+    target.refresh_from_db()
+    assert target.authz_version == version_before + 1
+    row = OrderOutbox.objects.filter(event_type="identity.authz_changed",
+                                     aggregate_id=str(target.id)).latest("created_at")
+    assert row.payload["roles"] == [StaffRole.MANAGER], "a superuser keeps manager capabilities"
+    assert row.payload["role_active"] is True
+
+
+def test_a_later_demotion_does_not_bring_the_old_role_back(superuser, target, django_user_model):
+    from accounts.roles import StaffRole
+    from employee import service
+
+    django_user_model.objects.create_superuser(username="+79990000811", password="Pass!2345")
+    target.groups.add(Group.objects.get_or_create(name=StaffRole.MANAGER)[0])
+    service.set_superuser(actor=superuser, target=target, is_superuser=True)
+
+    service.set_superuser(actor=superuser, target=target, is_superuser=False)
+
+    assert _group_names(target) == []
+
+
+@pytest.mark.parametrize("group", ["restaurant_manager", "restaurant_operator", "restaurant_employee"])
+def test_repeating_a_promotion_clears_a_group_left_behind(superuser, target, group):
+    from employee import service
+
+    service.set_superuser(actor=superuser, target=target, is_superuser=True)
+    target.groups.add(Group.objects.get_or_create(name=group)[0])
+    target.refresh_from_db()
+    version_before = target.authz_version
+
+    service.set_superuser(actor=superuser, target=target, is_superuser=True)
+
+    assert _group_names(target) == []
+    target.refresh_from_db()
+    assert target.authz_version == version_before, "capabilities did not change, so no token dies"
+
+
+def test_no_superuser_is_left_holding_a_staff_group(django_user_model):
+    from accounts.roles import LEGACY_GROUP, StaffRole
+
+    staff = [*StaffRole.values, LEGACY_GROUP]
+    stuck = django_user_model.objects.filter(is_superuser=True, groups__name__in=staff)
+
+    assert not stuck.exists(), "the migration must have cleared these"
