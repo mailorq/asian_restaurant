@@ -1,5 +1,7 @@
-# production storefront runtime: the base `env_file: [.env]` is reset per service below, so the
-# render never depends on a repo-root .env; every required value must be supplied explicitly.
+# production storefront runtime: the base `env_file: [.env]` is reset per service below, so no
+# container inherits a repo-root .env. Interpolation of ${VAR} below is a separate matter and
+# does read .env when one is present, so the release procedure passes --env-file explicitly
+# (see DEPLOY.md); every required value must be supplied there.
 x-storefront-prod-env: &storefront-prod-env
   DJANGO_PRODUCTION: "1"
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY}

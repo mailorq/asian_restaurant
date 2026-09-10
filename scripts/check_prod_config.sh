@@ -141,9 +141,12 @@ python3 - <<'DEPLOYDOC' || fail=1
 import pathlib, re
 
 doc = pathlib.Path("DEPLOY.md").read_text(encoding="utf-8")
-helper = re.compile(r"^dc\(\)\s*\{.*-f compose\.yaml.*-f compose\.prod\.yaml.*", re.M)
+helper = re.compile(
+    r"^dc\(\)\s*\{.*--env-file \"\$PROD_ENV_FILE\".*-f compose\.yaml.*-f compose\.prod\.yaml.*",
+    re.M,
+)
 if not helper.search(doc):
-    print("FAIL: DEPLOY.md has no dc() wrapper rendering compose.yaml + compose.prod.yaml")
+    print("FAIL: DEPLOY.md has no dc() wrapper passing --env-file \"$PROD_ENV_FILE\" with both compose files")
     raise SystemExit(1)
 bare = [ln.strip() for ln in doc.splitlines()
         if "docker compose" in ln and not ln.startswith("dc()")]

@@ -7,11 +7,14 @@
 как те завершились с кодом 0. Запускать `manage.py migrate` внутри рабочего контейнера не нужно:
 это второй путь миграции мимо развёртывания.
 
-Все команды релиза идут через обёртку: без `compose.prod.yaml` разворачивается dev-стек с его
-монтированиями и запасными значениями, а не production.
+Все команды релиза идут через обёртку. Без `compose.prod.yaml` разворачивается dev-стек с его
+монтированиями, а без явного `--env-file` Compose молча возьмёт `.env` из рабочей копии —
+то есть подставит значения разработки туда, где нужны секреты production.
 
 ```bash
-dc() { docker compose -f compose.yaml -f compose.prod.yaml "$@"; }
+: "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
+test -r "$PROD_ENV_FILE"
+dc() { docker compose --env-file "$PROD_ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
 
 # 1. применить миграции схемы обеим базам, до старта рантайма
 dc up --exit-code-from storefront-migrate storefront-migrate
@@ -26,6 +29,14 @@ dc exec backend python manage.py seed_menu
 # 4. собрать статику (если нужно)
 dc exec backend python manage.py collectstatic --noinput
 ```
+
+### Файл секретов
+
+`PROD_ENV_FILE` указывает на файл вне рабочей копии, например
+`/etc/asian-restaurant/production.env`. Файл `.env` из checkout источником истины не является:
+он содержит значения разработки и в production не используется. Значения-заглушки из
+`.env.example` приложение отвергает при старте — процесс не поднимется, а не поднимется тихо
+с чужим секретом.
 
 ### Если рантайм не стартует
 
