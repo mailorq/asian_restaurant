@@ -136,6 +136,22 @@ if unguarded:
     raise SystemExit(1)
 MIGRATE
 
+# the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
+python3 - <<'DEPLOYDOC' || fail=1
+import pathlib, re
+
+doc = pathlib.Path("DEPLOY.md").read_text(encoding="utf-8")
+helper = re.compile(r"^dc\(\)\s*\{.*-f compose\.yaml.*-f compose\.prod\.yaml.*", re.M)
+if not helper.search(doc):
+    print("FAIL: DEPLOY.md has no dc() wrapper rendering compose.yaml + compose.prod.yaml")
+    raise SystemExit(1)
+bare = [ln.strip() for ln in doc.splitlines()
+        if "docker compose" in ln and not ln.startswith("dc()")]
+if bare:
+    print("FAIL: DEPLOY.md calls docker compose directly: " + "; ".join(bare))
+    raise SystemExit(1)
+DEPLOYDOC
+
 # HTTPS redirect must be on by default in production, not left to the operator to remember
 grep -Eq "DJANGO_SSL_REDIRECT:[[:space:]]*[\"']?(1|true|True)[\"']?" <<<"$rendered" || {
   echo "FAIL: DJANGO_SSL_REDIRECT not enabled in the production render"; fail=1; }

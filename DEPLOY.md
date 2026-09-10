@@ -7,16 +7,24 @@
 как те завершились с кодом 0. Запускать `manage.py migrate` внутри рабочего контейнера не нужно:
 это второй путь миграции мимо развёртывания.
 
+Все команды релиза идут через обёртку: без `compose.prod.yaml` разворачивается dev-стек с его
+монтированиями и запасными значениями, а не production.
+
 ```bash
+dc() { docker compose -f compose.yaml -f compose.prod.yaml "$@"; }
+
 # 1. применить миграции схемы обеим базам, до старта рантайма
-docker compose up --exit-code-from storefront-migrate storefront-migrate
-docker compose up --exit-code-from operations-migrate operations-migrate
+dc up --exit-code-from storefront-migrate storefront-migrate
+dc up --exit-code-from operations-migrate operations-migrate
 
-# 2. обязательно наполнить/обновить каталог и остатки
-python manage.py seed_menu
+# 2. поднять рантайм
+dc up -d
 
-# 3. собрать статику (если нужно)
-python manage.py collectstatic --noinput
+# 3. обязательно наполнить/обновить каталог и остатки
+dc exec backend python manage.py seed_menu
+
+# 4. собрать статику (если нужно)
+dc exec backend python manage.py collectstatic --noinput
 ```
 
 ### Если рантайм не стартует
@@ -25,8 +33,8 @@ python manage.py collectstatic --noinput
 незапустившийся стек:
 
 ```bash
-docker compose ps --all
-docker compose logs storefront-migrate operations-migrate
+dc ps --all
+dc logs storefront-migrate operations-migrate
 ```
 
 ### Почему seed_menu обязателен
@@ -75,7 +83,7 @@ ingress, и он должен удовлетворять трём условия
    активных записей без ролей:
 
 ```bash
-docker compose exec operations-api python manage.py shell -c "from operations.models import EmployeeAuthorization as E; print(E.objects.filter(role_active=True, roles_known=False).count())"
+dc exec operations-api python manage.py shell -c "from operations.models import EmployeeAuthorization as E; print(E.objects.filter(role_active=True, roles_known=False).count())"
 ```
 
    Ноль означает, что каждому активному субъекту роль доставлена.
@@ -97,4 +105,4 @@ docker compose exec operations-api python manage.py shell -c "from operations.mo
 Корзина требует персистентности и отказа от вытеснения ключей. В
 [compose.yaml](compose.yaml) redis запускается с `--appendonly yes
 --maxmemory-policy noeviction` и томом `redis_data`. При изменении команды redis
-пересоздать контейнер: `docker compose up -d redis`.
+пересоздать контейнер: `dc up -d redis`.
