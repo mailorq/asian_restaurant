@@ -111,6 +111,29 @@ for side in sorted(GUARD.values()):
 if runtime_migrating:
     print("FAIL: a long-running service migrates on startup: " + ", ".join(runtime_migrating))
     raise SystemExit(1)
+
+# the migrator must run once and exit, or the services waiting on it never start
+for side, (job,) in ((side, migrators[side]) for side in sorted(migrators)):
+    spec = services[job]
+    if spec.get("restart") not in (None, "no") or spec.get("command") != ["true"]:
+        print(f"FAIL: {job} is not a one-shot job (restart={spec.get('restart')!r}, "
+              f"command={spec.get('command')!r})")
+        raise SystemExit(1)
+
+# every runtime service must wait for its own migrator: without this it can start against a
+# schema the deployment has not migrated yet
+unguarded = []
+for name, spec in sorted(services.items()):
+    side = GUARD.get((spec.get("build") or {}).get("dockerfile", ""))
+    if not side or name in migrators.get(side, []):
+        continue
+    job = migrators[side][0]
+    wait = (spec.get("depends_on") or {}).get(job) or {}
+    if wait.get("condition") != "service_completed_successfully":
+        unguarded.append(f"{name} -> {job}")
+if unguarded:
+    print("FAIL: these start without waiting for their migration job: " + ", ".join(unguarded))
+    raise SystemExit(1)
 MIGRATE
 
 # HTTPS redirect must be on by default in production, not left to the operator to remember
