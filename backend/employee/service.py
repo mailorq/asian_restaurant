@@ -1,12 +1,14 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.db import transaction
 from django.db.models import Q
 
 from accounts.models import EmployeeRoleAudit, has_operations_role
-from accounts.roles import roles_of
+from accounts.roles import LEGACY_GROUP, StaffRole, roles_of
 from orders.models import OrderOutbox
 
 AUTHZ_EVENT = "identity.authz_changed"
+STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
 
 
 def emit_authz(user) -> None:
@@ -53,6 +55,8 @@ def _other_active_superusers(locked, exclude_pk) -> list:
 def set_superuser(actor, target, is_superuser: bool):
     locked = _lock_privileged(actor, target.pk)
     user = locked[target.pk]
+    if is_superuser:
+        user.groups.remove(*Group.objects.filter(name__in=STAFF_GROUPS))
     if user.is_superuser == is_superuser:
         return user
     if not is_superuser and not _other_active_superusers(locked, user.pk):
