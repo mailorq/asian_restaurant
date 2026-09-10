@@ -13,6 +13,10 @@ class NotAuthorized(Exception):
     pass
 
 
+class InvalidRoleTarget(Exception):
+    pass
+
+
 class StaffRole(models.TextChoices):
     OPERATOR = "restaurant_operator", "Оператор"
     MANAGER = "restaurant_manager", "Менеджер"
@@ -96,6 +100,8 @@ def set_staff_role(*, actor, target, role: str | None):
         raise NotAuthorized("only an active superuser may change a staff role")
 
     user = locked[target.pk]
+    if user.is_superuser:
+        raise InvalidRoleTarget("a superuser holds no staff role")
     staff_groups = [*StaffRole.values, LEGACY_GROUP]
     # compare the membership that is actually there: a broken double grant resolves to no role, and comparing resolved roles would call clearing it a noop
     held = set(user.groups.filter(name__in=staff_groups).values_list("name", flat=True))

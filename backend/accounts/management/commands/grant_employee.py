@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from accounts.roles import NotAuthorized, StaffRole, set_staff_role
+from accounts.roles import InvalidRoleTarget, NotAuthorized, StaffRole, set_staff_role
 
 
 class Command(BaseCommand):
@@ -26,7 +26,7 @@ class Command(BaseCommand):
             raise CommandError("actor not found") from None
         try:
             set_staff_role(actor=actor, target=user, role=options["role"])
-        except NotAuthorized as exc:
+        except (NotAuthorized, InvalidRoleTarget) as exc:
             raise CommandError(str(exc)) from exc
         held = options["role"] or "none"
         self.stdout.write(self.style.SUCCESS(f"staff role of {user.username} is now {held}"))

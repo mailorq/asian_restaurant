@@ -4,7 +4,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
-from accounts.roles import NotAuthorized, set_staff_role
+from accounts.roles import InvalidRoleTarget, NotAuthorized, set_staff_role
 from config.pagination import DEFAULT_PAGE_SIZE, paginate
 from employee.permissions import (
     customers_required,
@@ -45,7 +45,7 @@ def _orders_qs():
 @router.get("/orders", response=PagedOrders)
 @employee_required
 def list_orders(request, status: str | None = None, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE):
-    # id breaks ties so a page boundary cannot repeat or skip a row
+    # id breaks ties on equal timestamps; offset paging still shifts when the set changes
     qs = _orders_qs().order_by("-created_at", "-id")
     if status:
         qs = qs.filter(status=status)
@@ -172,11 +172,10 @@ def set_role(request, user_id: int, data: RoleIn):
     target = get_user_model().objects.filter(id=user_id).first()
     if target is None:
         raise HttpError(404, "Пользователь не найден")
-    if target.is_superuser:
-        # a staff role adds nothing to a superuser, and clearing one would report a revoke while every right stays
-        raise HttpError(409, "Роль суперпользователя меняется отдельно")
     try:
         set_staff_role(actor=request.auth, target=target, role=data.role)
+    except InvalidRoleTarget as exc:
+        raise HttpError(409, "Роль суперпользователя меняется отдельно") from exc
     except NotAuthorized as exc:
         raise HttpError(403, str(exc)) from exc
     return (
