@@ -107,19 +107,28 @@ IDENTITY_JWT_PREVIOUS_PUBLIC_KEY = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY", defau
 IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE", default="")
 IDENTITY_JWT_PREVIOUS_KID = env("IDENTITY_JWT_PREVIOUS_KID", default="")
 
+def _is_placeholder(value: str) -> bool:
+    """
+    a value the repository could have shipped as an example, by shape rather than by list
+
+    naming the two historical defaults let every placeholder added afterwards boot production
+    """
+    lowered = str(value).strip().lower()
+    return "change-me" in lowered or lowered.startswith(("dev-", "ops-dev"))
+
 DJANGO_PRODUCTION = env.bool("DJANGO_PRODUCTION", default=False)
 if DJANGO_PRODUCTION:
     import os
 
     from django.core.exceptions import ImproperlyConfigured
 
-    if SECRET_KEY == "dev-insecure-change-me":
+    if _is_placeholder(SECRET_KEY):
         raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set in production")
     if DEBUG:
         raise ImproperlyConfigured("DJANGO_DEBUG must be off in production")
     if "*" in ALLOWED_HOSTS:
         raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS must be restricted in production")
-    if IDENTITY_JWT_KID == "dev-1":
+    if _is_placeholder(IDENTITY_JWT_KID):
         raise ImproperlyConfigured("production must not use the development signing kid")
     # the signing key comes from a readable secret file (Docker/K8s secret), not an env var
     if IDENTITY_JWT_PRIVATE_KEY:

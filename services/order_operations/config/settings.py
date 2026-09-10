@@ -11,11 +11,20 @@ environ.Env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("OPERATIONS_SECRET_KEY", default="ops-dev-insecure-change-me")
 DEBUG = env.bool("OPERATIONS_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("OPERATIONS_ALLOWED_HOSTS", default=["*"])
+def _is_placeholder(value: str) -> bool:
+    """
+    a value the repository could have shipped as an example, by shape rather than by list
+
+    naming the two historical defaults let every placeholder added afterwards boot production
+    """
+    lowered = str(value).strip().lower()
+    return "change-me" in lowered or lowered.startswith(("dev-", "ops-dev"))
+
 PRODUCTION = env.bool("OPERATIONS_PRODUCTION", default=False)
 
 if PRODUCTION:
     # refuse to boot production with dev fallbacks that would weaken auth or host checks
-    if SECRET_KEY.startswith("ops-dev-insecure"):
+    if _is_placeholder(SECRET_KEY):
         raise ImproperlyConfigured("OPERATIONS_SECRET_KEY must be set (no dev fallback) in production")
     if "*" in ALLOWED_HOSTS:
         raise ImproperlyConfigured("OPERATIONS_ALLOWED_HOSTS must be restricted in production")
