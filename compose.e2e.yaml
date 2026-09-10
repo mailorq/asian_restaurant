@@ -4,6 +4,9 @@ services:
   # .env.e2e (no local .env / gitignored override needed).
   rabbitmq:
     ports: !override []
+  storefront-migrate:
+    env_file: !override [.env.e2e]
+
   backend:
     env_file: !override [.env.e2e]
     ports: !override []

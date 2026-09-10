@@ -86,6 +86,33 @@ grep -Eq 'map[[:space:]]+\$http_x_forwarded_proto[[:space:]]+\$forwarded_proto' 
 grep -A4 'map[[:space:]]\+\$http_x_forwarded_proto' frontend/nginx/default.conf | grep -q '\$scheme' || {
   echo "FAIL: no scheme fallback for a request that arrives without a proxy"; fail=1; }
 
+# migrations are a deployment step, not something every process races on startup
+RENDERED_JSON="$rendered_json" python3 - <<'MIGRATE' || fail=1
+import json, os
+
+GUARD = {"backend/Dockerfile": "storefront", "services/order_operations/Dockerfile": "operations"}
+services = json.loads(os.environ["RENDERED_JSON"])["services"]
+migrators, runtime_migrating = {}, []
+for name, spec in sorted(services.items()):
+    side = GUARD.get((spec.get("build") or {}).get("dockerfile", ""))
+    if not side:
+        continue
+    env = spec.get("environment") or {}
+    runs = str(env.get("RUN_MIGRATIONS", "")) == "1"
+    if runs:
+        migrators.setdefault(side, []).append(name)
+    if runs and spec.get("restart") not in (None, "no"):
+        runtime_migrating.append(name)
+for side in sorted(GUARD.values()):
+    found = migrators.get(side, [])
+    if len(found) != 1:
+        print(f"FAIL: {side} needs exactly one migration service, found {found or 'none'}")
+        raise SystemExit(1)
+if runtime_migrating:
+    print("FAIL: a long-running service migrates on startup: " + ", ".join(runtime_migrating))
+    raise SystemExit(1)
+MIGRATE
+
 # HTTPS redirect must be on by default in production, not left to the operator to remember
 grep -Eq "DJANGO_SSL_REDIRECT:[[:space:]]*[\"']?(1|true|True)[\"']?" <<<"$rendered" || {
   echo "FAIL: DJANGO_SSL_REDIRECT not enabled in the production render"; fail=1; }

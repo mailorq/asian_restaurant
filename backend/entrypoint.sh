@@ -13,8 +13,11 @@ if [ "$DJANGO_MAKEMIGRATIONS" = "1" ]; then
     python manage.py makemigrations --noinput
 fi
 
-echo "[entrypoint] migrate"
-python manage.py migrate --noinput
+# only the deployment step migrates. every image shares this entrypoint, so without the opt-in each of them would race the others on the same database at every rollout
+if [ "$RUN_MIGRATIONS" = "1" ]; then
+    echo "[entrypoint] migrate"
+    python manage.py migrate --noinput
+fi
 
 if [ "$DJANGO_COLLECTSTATIC" = "1" ]; then
     echo "[entrypoint] collectstatic"

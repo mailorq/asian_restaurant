@@ -76,8 +76,26 @@ services:
     # loopback only: an external ingress terminates TLS and forwards here. published on 0.0.0.0 this serves the login form over plain HTTP
     ports: !override ["127.0.0.1:80:80"]
 
-  backend:
-    # signing key is a read-only Docker secret file, never an env var; dev mount dropped and
+  # migrations run as their own deployment step; the runtime services wait for them
+  storefront-migrate:
+    secrets:
+      - identity_jwt_private_key
+    env_file: !reset null
+    environment:
+      <<: *storefront-prod-env
+      RUN_MIGRATIONS: "1"
+    volumes: !override []
+
+  operations-migrate:
+    environment:
+      OPERATIONS_PRODUCTION: "1"
+      OPERATIONS_DEBUG: "0"
+      RUN_MIGRATIONS: "1"
+      OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:?set OPERATIONS_SECRET_KEY}
+      OPERATIONS_ALLOWED_HOSTS: ${OPERATIONS_ALLOWED_HOSTS:?set OPERATIONS_ALLOWED_HOSTS}
+      OPERATIONS_DATABASE_URL: ${OPERATIONS_DATABASE_URL:?set OPERATIONS_DATABASE_URL}
+
+  backend:    # signing key is a read-only Docker secret file, never an env var; dev mount dropped and
     # base `env_file: [.env]` reset so the production render never depends on repo-root .env
     secrets:
       - identity_jwt_private_key
