@@ -1,10 +1,17 @@
-"""production must not boot on a value the repository ships as an example"""
+"""production must not boot on a placeholder-shaped secret
+
+each run is a fresh process built only from what the test supplies, so it behaves the same in
+the image and on a CI runner
+"""
 
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 BASE = {
     "OPERATIONS_PRODUCTION": "1",
@@ -15,23 +22,27 @@ BASE = {
 }
 
 
-def _boots(**overrides) -> bool:
-    env = {**os.environ, **BASE, **overrides}
-    result = subprocess.run(
-        [sys.executable, "-c", "import django, os;"
-         "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings');"
-         "django.setup()"],
-        cwd="/app", env=env, capture_output=True, text=True, timeout=60,
+def _boot(**overrides) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+    env |= BASE | overrides
+    return subprocess.run(
+        [sys.executable, "-c",
+         "import os, django; os.environ['DJANGO_SETTINGS_MODULE'] = 'config.settings'; django.setup()"],
+        cwd=SERVICE_ROOT, env=env, capture_output=True, text=True, timeout=60,
     )
-    return result.returncode == 0
 
 
 def test_the_baseline_starts():
-    assert _boots()
+    result = _boot()
+    assert result.returncode == 0, f"the test itself must not be why a start fails:\n{result.stderr[-800:]}"
 
 
 @pytest.mark.parametrize("secret", [
     "ops-dev-insecure", "change-me-ops-secret", "CHANGE-ME-OPS", "dev-anything",
 ])
 def test_a_placeholder_shaped_secret_refuses_to_start(secret):
-    assert not _boots(OPERATIONS_SECRET_KEY=secret), f"production booted on {secret!r}"
+    result = _boot(OPERATIONS_SECRET_KEY=secret)
+    assert result.returncode != 0
+    assert "ImproperlyConfigured" in result.stderr and "OPERATIONS_SECRET_KEY" in result.stderr, (
+        f"{secret!r} failed for another reason:\n{result.stderr[-800:]}"
+    )
