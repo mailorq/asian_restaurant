@@ -178,6 +178,8 @@ CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SECURE = env.bool("DJANGO_COOKIE_SECURE", default=not DEBUG)
 CSRF_COOKIE_SECURE = env.bool("DJANGO_COOKIE_SECURE", default=not DEBUG)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# public keys only: operations fetches them from backend:8000 inside the network, where there is no tls to redirect to
+SECURE_REDIRECT_EXEMPT = [r"^api/auth/jwks$"]
 
 if not DEBUG:
     # on unless deliberately disabled; SECURE_PROXY_SSL_HEADER above is what makes it correct behind the TLS ingress, and a stack reachable over plain HTTP is the failure this prevents

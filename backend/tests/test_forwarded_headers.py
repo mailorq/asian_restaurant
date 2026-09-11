@@ -29,6 +29,17 @@ def test_a_plain_request_is_still_redirected(client, settings):
 
 
 @pytest.mark.django_db
+def test_the_public_keys_are_served_on_the_internal_plain_http_hop(client, settings):
+    # operations fetches them from backend:8000 inside the network, where there is no tls to redirect to
+    settings.SECURE_SSL_REDIRECT = True
+
+    response = client.get("/api/auth/jwks", HTTP_HOST="backend:8000")
+
+    assert response.status_code == 200
+    assert response.json()["keys"]
+
+
+@pytest.mark.django_db
 def test_two_clients_behind_the_ingress_get_their_own_rate_limit_bucket(client, settings):
     settings.RATELIMIT_TRUST_XFF = True
     cache.clear()
