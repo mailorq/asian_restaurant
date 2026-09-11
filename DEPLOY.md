@@ -24,7 +24,7 @@ dc() {
   case "$env_file" in
     "$repo_root"/*) echo "PROD_ENV_FILE must live outside the checkout" >&2; return 1 ;;
   esac
-  # the resolved path, so the file compose reads is the one just checked
+  # the resolved path, so a symlink swapped after the check cannot redirect compose
   docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
 }
 
@@ -37,27 +37,53 @@ dc up -d
 
 # 3. обязательно наполнить/обновить каталог и остатки
 dc exec backend python manage.py seed_menu
-
-# 4. собрать статику (если нужно)
-dc exec backend python manage.py collectstatic --noinput
 ```
+
+Процессы приложения работают под uid/gid 10001. Статика собирается при сборке образа и в
+рантайме только читается, писать backend может лишь в том `media`, владельцем которого при
+каждом `dc up` его делает `media-init`. Команды через `dc exec` не запускать с `-u 0`, иначе
+созданные root файлы в `media` backend не перезапишет до следующего `dc up`.
 
 ### Файл секретов
 
-`PROD_ENV_FILE` указывает на файл вне рабочей копии, например
-`/etc/asian-restaurant/production.env`. Ни `.env`, ни любой другой файл внутри рабочей копии источником истины не является:
+`PROD_ENV_FILE` указывает на обычный файл (не symlink) вне рабочей копии, в защищённом
+каталоге, например `/etc/asian-restaurant/production.env`. Ни `.env`, ни любой другой файл внутри рабочей копии источником истины не является:
 он содержит значения разработки и в production не используется. Значения-заглушки из
 `.env.example` приложение отвергает при старте — процесс не поднимется, а не поднимется тихо
 с чужим секретом.
 
+`dc()` передаёт Compose уже разрешённый путь, поэтому подмена symlink после проверки ничего не
+даёт. От подмены самого файла между проверкой и чтением проверка не защищает: это задача прав.
+Каталог и файл доступны только root и deploy-пользователю (здесь его группа `deploy`):
+
+```bash
+sudo install -d -o root -g deploy -m 0750 /etc/asian-restaurant
+sudo chown root:deploy /etc/asian-restaurant/production.env
+sudo chmod 0640 /etc/asian-restaurant/production.env
+```
+
+### Ключ подписи
+
+Docker secret из файла монтируется в контейнер с владельцем и правами файла на хосте, а процессы
+приложения работают под uid/gid 10001. Ключ читает группа 10001 и больше никто, кроме root:
+
+```bash
+sudo chown root:10001 /etc/asian-restaurant/identity_jwt_private_key.pem
+sudo chmod 0440 /etc/asian-restaurant/identity_jwt_private_key.pem
+```
+
+Без этого backend не поднимется: production-проверка настроек требует читаемый
+`IDENTITY_JWT_PRIVATE_KEY_FILE`. Gid 10001 на хосте не должен принадлежать группе с
+участниками: они получат чтение ключа.
+
 ### Если рантайм не стартует
 
-Сервисы ждут `Exited (0)` от своего миграционного шага, поэтому упавшая миграция выглядит как
-незапустившийся стек:
+Сервисы ждут `Exited (0)` от своих одноразовых шагов, поэтому упавшая миграция или
+`media-init` выглядят как незапустившийся стек:
 
 ```bash
 dc ps --all
-dc logs storefront-migrate operations-migrate
+dc logs storefront-migrate operations-migrate media-init
 ```
 
 ### Почему seed_menu обязателен

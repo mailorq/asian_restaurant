@@ -9,7 +9,9 @@ scripts/dev_gen_jwt_key.sh   # writes ops/identity/jwt_private_key.pem (gitignor
 ## Production
 The private key is a **read-only secret file** mounted at
 `/run/secrets/identity_jwt_private_key`, pointed to by `IDENTITY_JWT_PRIVATE_KEY_FILE`
-(`compose.prod.yaml` uses a Docker secret). Production **rejects** an inline
+(`compose.prod.yaml` uses a Docker secret). The secret keeps the host file's ownership and
+mode, and the backend reads it as uid/gid 10001: `root:10001`, mode `0440` (see DEPLOY.md).
+Production **rejects** an inline
 `IDENTITY_JWT_PRIVATE_KEY`: with `DJANGO_PRODUCTION=1` the settings fail closed if the
 secret file is missing/unreadable, if the dev `kid` is used, if an inline key is passed,
 or if `SECRET_KEY`/`DEBUG`/`ALLOWED_HOSTS` use dev defaults. Inline
