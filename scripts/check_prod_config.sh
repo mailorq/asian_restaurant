@@ -141,17 +141,28 @@ python3 - <<'DEPLOYDOC' || fail=1
 import pathlib, re
 
 doc = pathlib.Path("DEPLOY.md").read_text(encoding="utf-8")
-helper = re.compile(
-    r"^dc\(\)\s*\{.*--env-file \"\$PROD_ENV_FILE\".*-f compose\.yaml.*-f compose\.prod\.yaml.*",
-    re.M,
-)
-if not helper.search(doc):
-    print("FAIL: DEPLOY.md has no dc() wrapper passing --env-file \"$PROD_ENV_FILE\" with both compose files")
+match = re.search(r"^dc\(\)\s*\{\n(.*?)^\}", doc, re.M | re.S)
+if not match:
+    print("FAIL: DEPLOY.md defines no dc() wrapper")
     raise SystemExit(1)
-bare = [ln.strip() for ln in doc.splitlines()
-        if "docker compose" in ln and not ln.startswith("dc()")]
-if bare:
-    print("FAIL: DEPLOY.md calls docker compose directly: " + "; ".join(bare))
+body = match.group(1)
+required = {
+    'the compose call passes --env-file "$PROD_ENV_FILE" with both files':
+        r'docker compose --env-file "\$PROD_ENV_FILE" -f compose\.yaml -f compose\.prod\.yaml',
+    "an unset PROD_ENV_FILE refuses":
+        r'\$\{PROD_ENV_FILE:\?',
+    "an unreadable PROD_ENV_FILE refuses the call":
+        r'test -r "\$PROD_ENV_FILE" \|\|.*return 1',
+    "PROD_ENV_FILE resolving to the checkout .env refuses the call":
+        r'test "\$\(realpath "\$PROD_ENV_FILE"\)" != "\$\(realpath \.env\)" \|\|\s*\n?\s*\{[^}]*return 1',
+}
+missing = [what for what, pattern in required.items() if not re.search(pattern, body, re.S)]
+if missing:
+    print("FAIL: dc() in DEPLOY.md is missing: " + "; ".join(missing))
+    raise SystemExit(1)
+outside = [ln.strip() for ln in doc.replace(match.group(0), "").splitlines() if "docker compose" in ln]
+if outside:
+    print("FAIL: DEPLOY.md calls docker compose outside dc(): " + "; ".join(outside))
     raise SystemExit(1)
 DEPLOYDOC
 

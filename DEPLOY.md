@@ -12,9 +12,15 @@
 то есть подставит значения разработки туда, где нужны секреты production.
 
 ```bash
-: "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
-test -r "$PROD_ENV_FILE"
-dc() { docker compose --env-file "$PROD_ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
+# the checks live inside dc(): a failing top-level `test` neither stops an interactive shell nor trips `set -e` inside an && list, so every call re-checks and refuses on its own
+dc() {
+  : "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
+  test -r "$PROD_ENV_FILE" || { echo "PROD_ENV_FILE is not readable" >&2; return 1; }
+  # resolved on both sides, so neither a relative path nor a symlink passes for the checkout .env
+  test "$(realpath "$PROD_ENV_FILE")" != "$(realpath .env)" ||
+    { echo "PROD_ENV_FILE must not be the checkout .env" >&2; return 1; }
+  docker compose --env-file "$PROD_ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"
+}
 
 # 1. применить миграции схемы обеим базам, до старта рантайма
 dc up --exit-code-from storefront-migrate storefront-migrate
