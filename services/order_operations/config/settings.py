@@ -66,7 +66,7 @@ COMMANDS_RABBITMQ_URL = env("OPERATIONS_COMMANDS_RABBITMQ_URL", default="")
 
 IDENTITY_JWKS_URL = env("IDENTITY_JWKS_URL", default="")
 
-# consumer exposes its own metrics; the API process cannot see the consumer's counters
+# every process exports its own counters on this port, since none can see another's
 METRICS_PORT = env.int("OPERATIONS_METRICS_PORT", default=9101)
 
 LOG_LEVEL = env("OPERATIONS_LOG_LEVEL", default="INFO")
