@@ -22,16 +22,17 @@ def _signing_key(token: str):
 
 
 def _authorized(claims) -> bool:
-    # fail closed: the local authorization projection must know this subject at the token's
-    # authz_version with an active role and user. Unknown, stale, or an unavailable
-    # projection (query error) are all rejected — a valid old token never authorizes.
+    # fail closed: the local authorization projection must know this subject at the token's authz_version with an active role and user, so an unknown or stale subject is rejected and a valid old token never authorizes
+    # a projection that cannot be read is a server failure, not a verdict on the token: it propagates, nothing is granted, and an exhausted pool answers 503
     from operations.models import EmployeeAuthorization
 
     try:
         subject = int(claims.get("sub"))
-        authz = EmployeeAuthorization.objects.filter(subject_id=subject).first()
-    except Exception:
+    except (TypeError, ValueError):
         return False
+    if not 0 <= subject < 2**31:
+        return False
+    authz = EmployeeAuthorization.objects.filter(subject_id=subject).first()
     # role_active and roles come from one emitter, so disagreement is corruption rather than a grant. it is checked here as well as in the contract
     if not (authz and authz.user_active and authz.role_active and authz.authz_version == claims.get("authz_version")):
         return False
