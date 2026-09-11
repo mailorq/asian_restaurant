@@ -165,8 +165,8 @@ mounts = [v.get("target") for v in init.get("volumes") or [] if v.get("source") 
 if (len(mounts) != 1 or len(init.get("volumes") or []) != 1
         or init.get("entrypoint") != ["chown", "-R", "10001:10001", *mounts]
         or init.get("command") or init.get("restart") not in (None, "no")
-        or init.get("network_mode") != "none"):
-    failed.append("media-init is not a one-shot chown of the media volume alone, with no network")
+        or init.get("network_mode") != "none" or init.get("user") != "0:0"):
+    failed.append("media-init is not a root one-shot chown of the media volume alone, with no network")
 wait = ((services.get("backend") or {}).get("depends_on") or {}).get("media-init") or {}
 if wait.get("condition") != "service_completed_successfully":
     failed.append("backend starts without waiting for media-init")
@@ -175,6 +175,47 @@ if failed:
     print("FAIL: " + "; ".join(failed))
     raise SystemExit(1)
 NONROOT
+
+# application processes run read-only without capabilities or privilege gain, with bounded memory and process count
+RENDERED_JSON="$rendered_json" python3 - <<'HARDEN' || fail=1
+import json, os
+
+APP = ("backend/Dockerfile", "services/order_operations/Dockerfile")
+NNP = {"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"}
+services = json.loads(os.environ["RENDERED_JSON"])["services"]
+
+
+def gaps(spec, cap_add):
+    found = []
+    if spec.get("read_only") is not True:
+        found.append("read_only")
+    if spec.get("cap_drop") != ["ALL"] or sorted(spec.get("cap_add") or []) != cap_add:
+        found.append("capabilities")
+    if not NNP & set(spec.get("security_opt") or []):
+        found.append("no-new-privileges")
+    if not spec.get("mem_limit") or not spec.get("pids_limit"):
+        found.append("limits")
+    return found
+
+
+failed = []
+for name, spec in sorted(services.items()):
+    if (spec.get("build") or {}).get("dockerfile") not in APP:
+        continue
+    found = gaps(spec, [])
+    mounts = {t.split(":", 1)[0] for t in spec.get("tmpfs") or []}
+    wanted = {"/tmp", (spec.get("environment") or {}).get("PROMETHEUS_MULTIPROC_DIR") or "/tmp"}
+    if not wanted <= mounts:
+        found.append("tmpfs " + ", ".join(sorted(wanted - mounts)))
+    if found:
+        failed.append(f"{name}: {', '.join(found)}")
+found = gaps(services.get("media-init") or {}, ["CHOWN", "DAC_READ_SEARCH"])
+if found:
+    failed.append("media-init: " + ", ".join(found))
+if failed:
+    print("FAIL: not hardened: " + "; ".join(failed))
+    raise SystemExit(1)
+HARDEN
 
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
 python3 - <<'DEPLOYDOC' || fail=1
