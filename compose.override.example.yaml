@@ -10,6 +10,8 @@ services:
       DJANGO_DEBUG: "1"
       DJANGO_COOKIE_SECURE: "0"
       DJANGO_MAKEMIGRATIONS: "1"
+    # the dev target runs as root over the host checkout and needs the default capabilities to write there
+    cap_drop: !reset []
     volumes:
       - ./backend:/app
       - media:/app/media

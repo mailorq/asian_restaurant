@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 set -e
 
-# fresh multiprocess dir so gunicorn workers export prometheus metrics correctly.
+# fresh multiprocess dir so gunicorn workers export prometheus metrics correctly. emptied in place, it can be a mount point
 if [ -n "$PROMETHEUS_MULTIPROC_DIR" ]; then
-    rm -rf "$PROMETHEUS_MULTIPROC_DIR"
     mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
+    find "$PROMETHEUS_MULTIPROC_DIR" -mindepth 1 -delete
 fi
 
 # dev convenience only. generate missing migrations. in prod they are committed.

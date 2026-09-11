@@ -1,5 +1,15 @@
 name: asian-restaurant
 
+# application processes: read-only root filesystem, no capabilities, no privilege gain, bounded memory and processes
+x-app-hardening: &app-hardening
+  read_only: true
+  tmpfs:
+    - &tmp-mount /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  pids_limit: 64
+
 services:
   db:
     image: postgres:16-alpine
@@ -48,6 +58,7 @@ services:
 
   # migrations are a deployment step: one job per database, run to completion before anything else starts. every application image shares an entrypoint, so without this they would all migrate the same database at once on every rollout
   storefront-migrate:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -62,6 +73,7 @@ services:
     restart: "no"
 
   operations-migrate:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -82,11 +94,19 @@ services:
     user: "0:0"
     entrypoint: ["chown", "-R", "10001:10001", "/media"]
     network_mode: none
+    read_only: true
+    # DAC_READ_SEARCH walks directories the runtime user made unreadable to others
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_READ_SEARCH]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    pids_limit: 16
     volumes:
       - media:/media
     restart: "no"
 
   backend:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -96,6 +116,11 @@ services:
     environment:
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
       IDENTITY_JWT_PRIVATE_KEY_FILE: /run/identity/jwt_private_key.pem
+    tmpfs:
+      - *tmp-mount
+      - /tmp/prometheus:size=32m,uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev
+    mem_limit: 1g
+    pids_limit: 256
     depends_on:
       storefront-migrate:
         condition: service_completed_successfully
@@ -118,6 +143,7 @@ services:
 
   # transactional outbox relay: publishes pending order events to RabbitMQ
   relay:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -141,6 +167,7 @@ services:
 
   # ops runtime: consumes order events and builds the RestaurantOrder projection
   ops:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -175,6 +202,7 @@ services:
     restart: unless-stopped
 
   operations-api:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -196,6 +224,7 @@ services:
     restart: unless-stopped
 
   operations-consumer:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -220,6 +249,7 @@ services:
     restart: unless-stopped
 
   operations-bridge:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -240,6 +270,7 @@ services:
     restart: unless-stopped
 
   commands-consumer:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -269,6 +300,7 @@ services:
     restart: unless-stopped
 
   commands-relay:
+    <<: *app-hardening
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
