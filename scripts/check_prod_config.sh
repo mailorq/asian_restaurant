@@ -136,6 +136,46 @@ if unguarded:
     raise SystemExit(1)
 MIGRATE
 
+# application images run production as 10001, compose keeps it, and only backend and media-init write media
+RENDERED_JSON="$rendered_json" python3 - <<'NONROOT' || fail=1
+import json, os, pathlib, re
+
+APP = ("backend/Dockerfile", "services/order_operations/Dockerfile")
+failed = []
+for dockerfile in APP:
+    text = pathlib.Path(dockerfile).read_text(encoding="utf-8")
+    stage = re.search(r"^FROM \S+ AS prod\s*$(.*?)(?=^FROM |\Z)", text, re.M | re.S)
+    users = re.findall(r"^USER\s+(\S+)\s*$", stage.group(1), re.M) if stage else []
+    if users[-1:] != ["10001:10001"]:
+        failed.append(f"{dockerfile}: the prod stage does not run as 10001:10001")
+
+services = json.loads(os.environ["RENDERED_JSON"])["services"]
+for name, spec in sorted(services.items()):
+    if (spec.get("build") or {}).get("dockerfile") in APP and spec.get("user"):
+        failed.append(f"{name}: user {spec['user']!r} overrides the image user")
+
+writers = sorted({
+    name for name, spec in services.items() for v in spec.get("volumes") or []
+    if v.get("type") == "volume" and v.get("source") == "media" and not v.get("read_only")})
+if writers != ["backend", "media-init"]:
+    failed.append(f"media is writable by {writers}, expected backend and media-init")
+
+init = services.get("media-init") or {}
+mounts = [v.get("target") for v in init.get("volumes") or [] if v.get("source") == "media"]
+if (len(mounts) != 1 or len(init.get("volumes") or []) != 1
+        or init.get("entrypoint") != ["chown", "-R", "10001:10001", *mounts]
+        or init.get("command") or init.get("restart") not in (None, "no")
+        or init.get("network_mode") != "none"):
+    failed.append("media-init is not a one-shot chown of the media volume alone, with no network")
+wait = ((services.get("backend") or {}).get("depends_on") or {}).get("media-init") or {}
+if wait.get("condition") != "service_completed_successfully":
+    failed.append("backend starts without waiting for media-init")
+
+if failed:
+    print("FAIL: " + "; ".join(failed))
+    raise SystemExit(1)
+NONROOT
+
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
 python3 - <<'DEPLOYDOC' || fail=1
 import pathlib, re
