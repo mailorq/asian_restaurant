@@ -147,14 +147,18 @@ if not match:
     raise SystemExit(1)
 body = match.group(1)
 required = {
-    'the compose call passes --env-file "$PROD_ENV_FILE" with both files':
-        r'docker compose --env-file "\$PROD_ENV_FILE" -f compose\.yaml -f compose\.prod\.yaml',
+    "the compose call reads the resolved file with both compose files":
+        r'docker compose --env-file "\$env_file" -f compose\.yaml -f compose\.prod\.yaml',
     "an unset PROD_ENV_FILE refuses":
         r'\$\{PROD_ENV_FILE:\?',
     "an unreadable PROD_ENV_FILE refuses the call":
         r'test -r "\$PROD_ENV_FILE" \|\|.*return 1',
-    "PROD_ENV_FILE resolving to the checkout .env refuses the call":
-        r'test "\$\(realpath "\$PROD_ENV_FILE"\)" != "\$\(realpath \.env\)" \|\|\s*\n?\s*\{[^}]*return 1',
+    "the checkout root is resolved":
+        r'repo_root="\$\(realpath \.\)"',
+    "PROD_ENV_FILE is resolved before it is judged":
+        r'env_file="\$\(realpath "\$PROD_ENV_FILE"\)"',
+    "a file resolving inside the checkout refuses the call":
+        r'case "\$env_file" in\s*\n\s*"\$repo_root"/\*\)[^\n]*return 1',
 }
 missing = [what for what, pattern in required.items() if not re.search(pattern, body, re.S)]
 if missing:

@@ -13,13 +13,19 @@
 
 ```bash
 # the checks live inside dc(): a failing top-level `test` neither stops an interactive shell nor trips `set -e` inside an && list, so every call re-checks and refuses on its own
+# run from the checkout root: compose.yaml is found there, and it is what counts as inside
 dc() {
   : "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
   test -r "$PROD_ENV_FILE" || { echo "PROD_ENV_FILE is not readable" >&2; return 1; }
-  # resolved on both sides, so neither a relative path nor a symlink passes for the checkout .env
-  test "$(realpath "$PROD_ENV_FILE")" != "$(realpath .env)" ||
-    { echo "PROD_ENV_FILE must not be the checkout .env" >&2; return 1; }
-  docker compose --env-file "$PROD_ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"
+  local repo_root env_file
+  repo_root="$(realpath .)"
+  env_file="$(realpath "$PROD_ENV_FILE")"
+  # resolved first, so neither a relative path nor a symlink leading back in passes for external
+  case "$env_file" in
+    "$repo_root"/*) echo "PROD_ENV_FILE must live outside the checkout" >&2; return 1 ;;
+  esac
+  # the resolved path, so the file compose reads is the one just checked
+  docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
 }
 
 # 1. применить миграции схемы обеим базам, до старта рантайма
@@ -39,7 +45,7 @@ dc exec backend python manage.py collectstatic --noinput
 ### Файл секретов
 
 `PROD_ENV_FILE` указывает на файл вне рабочей копии, например
-`/etc/asian-restaurant/production.env`. Файл `.env` из checkout источником истины не является:
+`/etc/asian-restaurant/production.env`. Ни `.env`, ни любой другой файл внутри рабочей копии источником истины не является:
 он содержит значения разработки и в production не используется. Значения-заглушки из
 `.env.example` приложение отвергает при старте — процесс не поднимется, а не поднимется тихо
 с чужим секретом.
