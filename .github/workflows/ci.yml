@@ -224,6 +224,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/prod_bootstrap_smoke.sh
 
+  db-roles:
+    # the production database roles: a storefront volume from before the split and a fresh operations volume, provisioned and migrated as a release does, then what the runtime role may and may not do
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/db_roles_smoke.sh
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
