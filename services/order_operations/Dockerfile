@@ -22,4 +22,4 @@ FROM base AS prod
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app
 USER 10001:10001
-CMD ["gunicorn", "config.asgi:application", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:9000", "--no-control-socket"]
+CMD ["gunicorn", "config.asgi:application", "-k", "config.workers.BoundedUvicornWorker", "--bind", "0.0.0.0:9000", "--no-control-socket"]

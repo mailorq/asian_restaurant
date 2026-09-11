@@ -36,7 +36,7 @@ RUN python manage.py collectstatic --noinput \
 USER 10001:10001
 EXPOSE 8000
 CMD ["gunicorn", "config.asgi:application", \
-     "-k", "uvicorn.workers.UvicornWorker", \
+     "-k", "config.workers.BoundedUvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "4", \
      "--timeout", "60", \

@@ -169,7 +169,8 @@ services:
       - *tmp-mount
       - /tmp/prometheus:size=32m,uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev
     mem_limit: 1g
-    pids_limit: 256
+    # per worker: the requests in flight, each with its thread and the one that joins it, the event loop's default executor, and a handful of its own
+    pids_limit: 768
     depends_on:
       storefront-migrate:
         condition: service_completed_successfully
@@ -262,6 +263,9 @@ services:
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://backend:8000/api/auth/jwks}
       OPERATIONS_DB_POOL_MAX_SIZE: "8"
+      OPERATIONS_METRICS_PORT: "9105"
+    # one worker, sized as for the backend
+    pids_limit: 128
     depends_on:
       operations-migrate:
         condition: service_completed_successfully
@@ -271,6 +275,7 @@ services:
         condition: service_healthy
     expose:
       - "9000"
+      - "9105"
     restart: unless-stopped
 
   operations-consumer:
