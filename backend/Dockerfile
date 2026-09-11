@@ -40,5 +40,6 @@ CMD ["gunicorn", "config.asgi:application", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "4", \
      "--timeout", "60", \
+     "--no-control-socket", \
      "--access-logfile", "-", \
      "--error-logfile", "-"]
