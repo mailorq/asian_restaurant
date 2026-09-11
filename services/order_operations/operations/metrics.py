@@ -1,5 +1,10 @@
 from prometheus_client import Counter, Gauge
 
+db_pool_exhausted = Counter(
+    "operations_db_pool_exhausted_total",
+    "Requests refused with 503 because no database connection became free within the pool timeout.",
+)
+
 projection_events = Counter(
     "operations_projection_events_total",
     "Projection outcomes by event type and outcome.",

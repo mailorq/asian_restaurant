@@ -47,6 +47,13 @@ TEMPLATES = [
 ]
 
 DATABASES = {"default": env.db("OPERATIONS_DATABASE_URL")}
+# ASGI runs every request in its own thread: connections come from a bounded pool per process and go back when the request ends
+DATABASES["default"]["CONN_MAX_AGE"] = 0
+DATABASES["default"].setdefault("OPTIONS", {})["pool"] = {
+    "min_size": 1,
+    "max_size": env.int("OPERATIONS_DB_POOL_MAX_SIZE", default=2),
+    "timeout": 5,
+}
 
 RABBITMQ_URL = env("OPERATIONS_RABBITMQ_URL", default="amqp://guest:guest@rabbitmq:5672/")
 

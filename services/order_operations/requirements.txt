@@ -3,6 +3,7 @@ django-ninja==1.7.0
 django-environ==0.14.0
 psycopg==3.3.4
 psycopg-binary==3.3.4
+psycopg-pool==3.3.1
 pika==1.4.4
 prometheus_client==0.26.0
 PyJWT==2.13.0
