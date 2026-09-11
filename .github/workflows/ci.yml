@@ -217,6 +217,13 @@ jobs:
           REQUIRE_COMMAND_PERMISSION_TESTS: "1"
         run: pytest services/order_operations/tests/test_command_permissions.py -q
 
+  prod-bootstrap:
+    # the release path for the broker: the one-shot rabbitmq-provision service against a bare broker from the production render, then the grants it has to leave behind
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/prod_bootstrap_smoke.sh
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
