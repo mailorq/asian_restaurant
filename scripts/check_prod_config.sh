@@ -242,6 +242,12 @@ parts.append(f"dc exec 1x{exec_size}")
 if budget > limit // 2:
     print(f"FAIL: storefront database budget {budget} is over half of max_connections {limit}: " + ", ".join(parts))
     raise SystemExit(1)
+# the runbook states the same sum, counted over the same production render
+stated = re.search(r"=\s+(\d+)\s+из\s+(\d+)\s+`max_connections`", pathlib.Path("DEPLOY.md").read_text(encoding="utf-8"))
+if not stated or (int(stated.group(1)), int(stated.group(2))) != (budget, limit):
+    print(f"FAIL: the storefront database budget in DEPLOY.md is {stated.group(0) if stated else 'missing'}, "
+          f"the production render gives {budget} of {limit}: " + ", ".join(parts))
+    raise SystemExit(1)
 DBPOOL
 
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
@@ -275,6 +281,16 @@ if missing:
 outside = [ln.strip() for ln in doc.replace(match.group(0), "").splitlines() if "docker compose" in ln]
 if outside:
     print("FAIL: DEPLOY.md calls docker compose outside dc(): " + "; ".join(outside))
+    raise SystemExit(1)
+# rabbitmq-provision sits in a profile, so a plain `dc up -d` never grants the users and permissions
+release = [ln.strip() for ln in doc.splitlines() if ln.startswith("dc ")]
+steps = ["dc up -d rabbitmq", "dc --profile provision run --rm rabbitmq-provision",
+         "dc up --exit-code-from storefront-migrate storefront-migrate",
+         "dc up --exit-code-from operations-migrate operations-migrate", "dc up -d"]
+at = [release.index(step) if step in release else -1 for step in steps]
+if -1 in at or at != sorted(at):
+    print("FAIL: DEPLOY.md does not provision the broker before migrations and the runtime, in this order: "
+          + "; ".join(steps))
     raise SystemExit(1)
 DEPLOYDOC
 
