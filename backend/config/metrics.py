@@ -38,6 +38,11 @@ login_attempts_total = Counter(
     ["result"],  # success | invalid_credentials | rate_limited
 )
 
+db_pool_exhausted_total = Counter(
+    "db_pool_exhausted_total",
+    "Requests refused with 503 because no database connection became free within the pool timeout.",
+)
+
 catalog_cache_events_total = Counter(
     "catalog_cache_events_total",
     "Menu catalog cache lookups.",

@@ -115,6 +115,7 @@ services:
     networks: [default, cache]
     environment:
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+      DJANGO_DB_POOL_MAX_SIZE: "8"
       IDENTITY_JWT_PRIVATE_KEY_FILE: /run/identity/jwt_private_key.pem
     tmpfs:
       - *tmp-mount

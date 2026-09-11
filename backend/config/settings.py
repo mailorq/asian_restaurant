@@ -71,10 +71,17 @@ DATABASES = {
             "DATABASE_URL",
             default="postgres://asian:asian@db:5432/asian_restaurant",
         ),
-        "CONN_MAX_AGE": env.int("DJANGO_DB_CONN_MAX_AGE", default=60),
+        # ASGI runs every request in its own thread, and a persistent connection stays with the thread that opened it
+        "CONN_MAX_AGE": 0,
     }
 }
 DATABASES["default"]["ENGINE"] = "django_prometheus.db.backends.postgresql"
+# per process. the sum over every storefront process is budgeted in DEPLOY.md and checked by the gate
+DATABASES["default"].setdefault("OPTIONS", {})["pool"] = {
+    "min_size": 1,
+    "max_size": env.int("DJANGO_DB_POOL_MAX_SIZE", default=2),
+    "timeout": 5,
+}
 
 CACHES = {
     "default": {
