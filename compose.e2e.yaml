@@ -14,3 +14,7 @@ services:
     ports: !override []
   commands-consumer:
     env_file: !override [.env.e2e]
+  relay:
+    env_file: !override [.env.e2e]
+  ops:
+    env_file: !override [.env.e2e]
