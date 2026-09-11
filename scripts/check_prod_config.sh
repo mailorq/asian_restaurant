@@ -287,6 +287,9 @@ for side, dockerfile, key, db in SIDES:
     if (env.get("PGHOST"), env.get("PGUSER"), env.get("PGDATABASE"), env.get("DB_MIGRATOR_ROLE"), env.get("DB_RUNTIME_ROLE")) \
             != (db, bootstrap, database, f"{side}_migrator", f"{side}_runtime"):
         failed.append(f"{provision} does not provision {side}_migrator and {side}_runtime on {db}/{database} as the bootstrap user")
+    # production mode also holds the bootstrap password to the production rules
+    if str(env.get("DB_PRODUCTION", "")) != "1":
+        failed.append(f"{provision} does not run in production mode")
     for name, spec in sorted(services.items()):
         if (spec.get("build") or {}).get("dockerfile") != dockerfile:
             continue
@@ -303,6 +306,32 @@ if failed:
     print("FAIL: " + "; ".join(failed))
     raise SystemExit(1)
 DBROLES
+
+# under ASGI a request in flight holds a thread and, as it ends, the one that joins it; the worker's bound caps them, and the pids limit must cover them plus the event loop's default executor (at most 32) and a few of the worker's own
+RENDERED_JSON="$rendered_json" python3 - <<'THREADS' || fail=1
+import json, os, pathlib, re
+
+WORKERS = {"backend/Dockerfile": "backend/config/workers.py",
+           "services/order_operations/Dockerfile": "services/order_operations/config/workers.py"}
+failed = []
+for name, spec in sorted(json.loads(os.environ["RENDERED_JSON"])["services"].items()):
+    dockerfile = (spec.get("build") or {}).get("dockerfile")
+    if dockerfile not in WORKERS or spec.get("command") is not None:
+        continue
+    image = pathlib.Path(dockerfile).read_text(encoding="utf-8")
+    if '"config.workers.BoundedUvicornWorker"' not in image:
+        failed.append(f"{dockerfile} does not run the bounded worker")
+        continue
+    bound = int(re.search(r'"limit_concurrency": (\d+)', pathlib.Path(WORKERS[dockerfile]).read_text(encoding="utf-8")).group(1))
+    workers = re.search(r'"--workers", "(\d+)"', image)
+    workers = int(workers.group(1)) if workers else 1  # the gunicorn default
+    need = workers * (2 * bound + 32 + 8) + 1
+    if int(spec.get("pids_limit") or 0) < need:
+        failed.append(f"{name}: pids_limit {spec.get('pids_limit')} is below {need} for {workers} workers of {bound} requests")
+if failed:
+    print("FAIL: " + "; ".join(failed))
+    raise SystemExit(1)
+THREADS
 
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
 python3 - <<'DEPLOYDOC' || fail=1
