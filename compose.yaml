@@ -10,6 +10,20 @@ x-app-hardening: &app-hardening
   mem_limit: 256m
   pids_limit: 64
 
+# database roles, run as the bootstrap superuser before each migration job: the runtime role gets DML only and the migrator owns the schema objects
+x-db-provision: &db-provision
+  image: postgres:16-alpine
+  user: "70:70"
+  entrypoint: ["psql", "-X", "-q", "-f", "/provision.sql"]
+  volumes:
+    - ./ops/postgres/provision.sql:/provision.sql:ro
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 64m
+  pids_limit: 16
+  restart: "no"
+
 services:
   db:
     image: postgres:16-alpine
@@ -56,6 +70,21 @@ services:
       - "127.0.0.1:15672:15672"
     restart: unless-stopped
 
+  storefront-db-provision:
+    <<: *db-provision
+    environment:
+      PGHOST: db
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DB_MIGRATOR_ROLE: storefront_migrator
+      DB_RUNTIME_ROLE: storefront_runtime
+      DB_MIGRATOR_PASSWORD: ${STOREFRONT_DB_MIGRATOR_PASSWORD:-dev-storefront-migrator}
+      DB_RUNTIME_PASSWORD: ${STOREFRONT_DB_RUNTIME_PASSWORD:-dev-storefront-runtime}
+    depends_on:
+      db:
+        condition: service_healthy
+
   # migrations are a deployment step: one job per database, run to completion before anything else starts. every application image shares an entrypoint, so without this they would all migrate the same database at once on every rollout
   storefront-migrate:
     <<: *app-hardening
@@ -68,9 +97,26 @@ services:
       RUN_MIGRATIONS: "1"
     command: ["true"]
     depends_on:
+      storefront-db-provision:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
     restart: "no"
+
+  operations-db-provision:
+    <<: *db-provision
+    environment:
+      PGHOST: operations-db
+      PGDATABASE: ${OPERATIONS_DB_NAME:-operations}
+      PGUSER: ${OPERATIONS_DB_USER:-ops_user}
+      PGPASSWORD: ${OPERATIONS_DB_PASSWORD:-ops_pass}
+      DB_MIGRATOR_ROLE: operations_migrator
+      DB_RUNTIME_ROLE: operations_runtime
+      DB_MIGRATOR_PASSWORD: ${OPERATIONS_DB_MIGRATOR_PASSWORD:-dev-operations-migrator}
+      DB_RUNTIME_PASSWORD: ${OPERATIONS_DB_RUNTIME_PASSWORD:-dev-operations-runtime}
+    depends_on:
+      operations-db:
+        condition: service_healthy
 
   operations-migrate:
     <<: *app-hardening
@@ -84,6 +130,8 @@ services:
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
     command: ["true"]
     depends_on:
+      operations-db-provision:
+        condition: service_completed_successfully
       operations-db:
         condition: service_healthy
     restart: "no"
@@ -213,6 +261,7 @@ services:
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://backend:8000/api/auth/jwks}
+      OPERATIONS_DB_POOL_MAX_SIZE: "8"
     depends_on:
       operations-migrate:
         condition: service_completed_successfully

@@ -1,3 +1,9 @@
+# the same database roles as production: migrations as the migrator, every process as the runtime role
+x-storefront-runtime: &storefront-runtime
+  DATABASE_URL: postgres://storefront_runtime:${STOREFRONT_DB_RUNTIME_PASSWORD}@db:5432/${POSTGRES_DB}
+x-operations-runtime: &operations-runtime
+  OPERATIONS_DATABASE_URL: postgres://operations_runtime:${OPERATIONS_DB_RUNTIME_PASSWORD}@operations-db:5432/${OPERATIONS_DB_NAME}
+
 services:
   # the E2E project reaches everything over the internal network via `exec`, so it
   # publishes no host ports and can run alongside the shared dev stack. It uses tracked
@@ -6,15 +12,32 @@ services:
     ports: !override []
   storefront-migrate:
     env_file: !override [.env.e2e]
+    environment:
+      DATABASE_URL: postgres://storefront_migrator:${STOREFRONT_DB_MIGRATOR_PASSWORD}@db:5432/${POSTGRES_DB}
+  operations-migrate:
+    environment:
+      OPERATIONS_DATABASE_URL: postgres://operations_migrator:${OPERATIONS_DB_MIGRATOR_PASSWORD}@operations-db:5432/${OPERATIONS_DB_NAME}
 
   backend:
     env_file: !override [.env.e2e]
-    ports: !override []
-  operations-api:
+    environment: *storefront-runtime
     ports: !override []
   commands-consumer:
     env_file: !override [.env.e2e]
+    environment: *storefront-runtime
   relay:
     env_file: !override [.env.e2e]
+    environment: *storefront-runtime
   ops:
     env_file: !override [.env.e2e]
+    environment: *storefront-runtime
+
+  operations-api:
+    environment: *operations-runtime
+    ports: !override []
+  operations-consumer:
+    environment: *operations-runtime
+  operations-bridge:
+    environment: *operations-runtime
+  commands-relay:
+    environment: *operations-runtime
