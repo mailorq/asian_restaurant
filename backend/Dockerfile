@@ -29,6 +29,11 @@ CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
 # prod: gunicorn + uvicorn worker (asgi) behind nginx — async endpoints run concurrently
 FROM base AS prod
+# static files are collected at build time and stay read-only for the runtime user
+RUN python manage.py collectstatic --noinput \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app
+USER 10001:10001
 EXPOSE 8000
 CMD ["gunicorn", "config.asgi:application", \
      "-k", "uvicorn.workers.UvicornWorker", \

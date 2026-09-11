@@ -76,6 +76,16 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # one-shot without network that hands the media volume to the runtime user 10001
+  media-init:
+    image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+    user: "0:0"
+    entrypoint: ["chown", "-R", "10001:10001", "/media"]
+    network_mode: none
+    volumes:
+      - media:/media
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -84,10 +94,12 @@ services:
     env_file: [.env]
     networks: [default, cache]
     environment:
-      PROMETHEUS_MULTIPROC_DIR: /app/.prometheus
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
       IDENTITY_JWT_PRIVATE_KEY_FILE: /run/identity/jwt_private_key.pem
     depends_on:
       storefront-migrate:
+        condition: service_completed_successfully
+      media-init:
         condition: service_completed_successfully
       db:
         condition: service_healthy

@@ -10,7 +10,6 @@ services:
       DJANGO_DEBUG: "1"
       DJANGO_COOKIE_SECURE: "0"
       DJANGO_MAKEMIGRATIONS: "1"
-      DJANGO_COLLECTSTATIC: "0"
     volumes:
       - ./backend:/app
       - media:/app/media

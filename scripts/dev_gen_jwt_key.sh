@@ -7,8 +7,9 @@ KEY="ops/identity/jwt_private_key.pem"
 mkdir -p ops/identity
 if [ -f "$KEY" ]; then
   echo "$KEY already exists — leaving it in place"
-  exit 0
+else
+  openssl genrsa -out "$KEY" 2048
+  echo "generated $KEY (gitignored) — restart the backend to load it"
 fi
-openssl genrsa -out "$KEY" 2048
-chmod 600 "$KEY"
-echo "generated $KEY (gitignored) — restart the backend to load it"
+# readable by uid 10001 of the prod-target image, a local dev key only
+chmod 644 "$KEY"
