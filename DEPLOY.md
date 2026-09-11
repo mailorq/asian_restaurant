@@ -28,14 +28,18 @@ dc() {
   docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
 }
 
-# 1. применить миграции схемы обеим базам, до старта рантайма
+# 1. поднять брокер и выдать пользователей и права; шаг обязан завершиться с кодом 0
+dc up -d rabbitmq
+dc --profile provision run --rm rabbitmq-provision
+
+# 2. применить миграции схемы обеим базам, до старта рантайма
 dc up --exit-code-from storefront-migrate storefront-migrate
 dc up --exit-code-from operations-migrate operations-migrate
 
-# 2. поднять рантайм
+# 3. поднять рантайм
 dc up -d
 
-# 3. обязательно наполнить/обновить каталог и остатки
+# 4. обязательно наполнить/обновить каталог и остатки
 dc exec backend python manage.py seed_menu
 ```
 
@@ -92,9 +96,11 @@ Persistent-соединения выключены: под ASGI каждый з�
 
 Верхняя граница соединений storefront: 4 воркера gunicorn × 8 + relay 2 + commands-consumer 2 +
 storefront-migrate 2 + одна команда через `dc exec backend` 8 = 46 из 100 `max_connections`.
-Гейт не пропускает сумму больше половины `max_connections`, поэтому число воркеров и размер пула
-меняют вместе с этим расчётом. После всплеска пул держит простаивающие соединения до 10 минут
-(`max_idle` psycopg_pool), но не больше своей границы.
+Legacy-консьюмер `ops` из профиля `legacy-projection` в production не запускается и сюда не
+входит. Гейт считает сумму по production-рендеру, сверяет её с числом выше и не пропускает больше
+половины `max_connections`, поэтому число воркеров и размер пула меняют вместе с этим расчётом.
+После всплеска пул держит простаивающие соединения до 10 минут (`max_idle` psycopg_pool), но не
+больше своей границы.
 
 Запрос, не получивший соединение за 5 с, получает `503` с `Retry-After: 1` и без деталей, а
 `db_pool_exhausted_total` растёт. Устойчивый рост этой метрики означает медленную БД или нехватку
