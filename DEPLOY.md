@@ -32,7 +32,7 @@ dc() {
 dc up -d rabbitmq
 dc --profile provision run --rm rabbitmq-provision
 
-# 2. применить миграции схемы обеим базам, до старта рантайма
+# 2. применить миграции схемы обеим базам, до старта рантайма; роли базы данных провижинятся перед ними сами
 dc up --exit-code-from storefront-migrate storefront-migrate
 dc up --exit-code-from operations-migrate operations-migrate
 
@@ -87,10 +87,35 @@ sudo chmod 0440 /etc/asian-restaurant/identity_jwt_private_key.pem
 `IDENTITY_JWT_PRIVATE_KEY_FILE`. Gid 10001 на хосте не должен принадлежать группе с
 участниками: они получат чтение ключа.
 
+### Роли PostgreSQL
+
+В каждой базе три роли. Bootstrap-суперпользователь (`POSTGRES_USER`, `OPERATIONS_DB_USER`)
+создаёт кластер, и им пользуются только одноразовые `storefront-db-provision` и
+`operations-db-provision`. Мигратор (`storefront_migrator`, `operations_migrator`) владеет
+таблицами и выполняет миграции. Рабочие процессы подключаются как runtime (`storefront_runtime`,
+`operations_runtime`): `CONNECT` только к своей базе, `USAGE` схемы `public`, DML и
+последовательности, без `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `TEMPORARY` и владения схемой.
+
+Провижининг запускается перед каждой миграцией как её зависимость и идемпотентен: сводит атрибуты
+ролей, пароли, членство, права и владение. На существующем volume он передаёт мигратору таблицы,
+которые до разделения создал bootstrap-пользователь. Пароли ролей берутся из файла секретов
+(`STOREFRONT_DB_MIGRATOR_PASSWORD`, `STOREFRONT_DB_RUNTIME_PASSWORD`,
+`OPERATIONS_DB_MIGRATOR_PASSWORD`, `OPERATIONS_DB_RUNTIME_PASSWORD`): не короче 16 символов из
+`[A-Za-z0-9_-]`, потому что они входят в адрес подключения, попарно разные и не заглушки, иначе
+провижининг останавливает релиз. `DATABASE_URL` и `OPERATIONS_DATABASE_URL` production не читает:
+адреса подключения собираются из имён ролей.
+
+Образ Postgres применяет `POSTGRES_*` только к пустому volume. Поэтому bootstrap-учётка в файле
+секретов обязана совпадать с той, с которой кластер создавался. `operations-db` раньше в
+production молча поднималась с `ops_user`/`ops_pass`, если `OPERATIONS_DB_*` не были заданы: такой
+кластер сначала провижинят с этими значениями, а пароль bootstrap меняют отдельно
+(`ALTER ROLE ... PASSWORD`), вместе с файлом секретов.
+
 ### Подключения к Postgres
 
-Каждый процесс storefront берёт соединения из собственного пула: `min_size` 1, `max_size` из
-`DJANGO_DB_POOL_MAX_SIZE` (по умолчанию 2, у backend 8), ожидание свободного соединения до 5 с.
+Каждый процесс storefront и Operations берёт соединения из собственного пула: `min_size` 1,
+`max_size` из `DJANGO_DB_POOL_MAX_SIZE` или `OPERATIONS_DB_POOL_MAX_SIZE` (по умолчанию 2, у
+backend и operations-api 8), ожидание свободного соединения до 5 с.
 Persistent-соединения выключены: под ASGI каждый запрос выполняется в своём потоке, и
 закреплённое за потоком соединение не возвращается.
 
@@ -102,18 +127,22 @@ Legacy-консьюмер `ops` из профиля `legacy-projection` в produ
 После всплеска пул держит простаивающие соединения до 10 минут (`max_idle` psycopg_pool), но не
 больше своей границы.
 
+Верхняя граница соединений operations: 1 воркер gunicorn × 8 (operations-api) + operations-consumer 2 +
+operations-bridge 2 + commands-relay 2 + operations-migrate 2 + одна команда через
+`dc exec operations-api` 8 = 24 из 100 `max_connections`.
+
 Запрос, не получивший соединение за 5 с, получает `503` с `Retry-After: 1` и без деталей, а
-`db_pool_exhausted_total` растёт. Устойчивый рост этой метрики означает медленную БД или нехватку
+`db_pool_exhausted_total` (в Operations `operations_db_pool_exhausted_total`) растёт. Устойчивый рост этой метрики означает медленную БД или нехватку
 пула, а не повод поднимать `max_connections`.
 
 ### Если рантайм не стартует
 
-Сервисы ждут `Exited (0)` от своих одноразовых шагов, поэтому упавшая миграция или
-`media-init` выглядят как незапустившийся стек:
+Сервисы ждут `Exited (0)` от своих одноразовых шагов, поэтому упавший провижининг ролей,
+миграция или `media-init` выглядят как незапустившийся стек:
 
 ```bash
 dc ps --all
-dc logs storefront-migrate operations-migrate media-init
+dc logs storefront-db-provision operations-db-provision storefront-migrate operations-migrate media-init
 ```
 
 ### Почему seed_menu обязателен
