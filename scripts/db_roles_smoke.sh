@@ -2,6 +2,7 @@
 # database roles on the production render in an isolated compose project:
 # a storefront volume laid out before the split, its tables created by the bootstrap superuser, and a fresh operations volume
 # each is provisioned and migrated exactly as a release does it, then the roles are checked in the catalog and by behaviour
+# the first release after the split is modelled too: it is refused while an older process still holds a bootstrap session, and the old dev bootstrap password of operations is refused until rotated
 # reads only tracked config and a throwaway env-file outside the checkout, and tears down only its own project
 set -euo pipefail
 
@@ -16,13 +17,14 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() { echo "== teardown (only $PROJ) =="; docker rm -f "${PROJ}_stale" >/dev/null 2>&1 || true; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
 SF_BOOT=smoke_boot SF_BOOT_PW="$(rnd)" SF_MIGRATOR_PW="$(rnd)" SF_RUNTIME_PW="$(rnd)"
-OPS_BOOT=smoke_ops_boot OPS_BOOT_PW="$(rnd)" OPS_MIGRATOR_PW="$(rnd)" OPS_RUNTIME_PW="$(rnd)"
+# the credentials operations-db used to fall back to in production
+OPS_BOOT=ops_user OPS_BOOT_PW=ops_pass OPS_MIGRATOR_PW="$(rnd)" OPS_RUNTIME_PW="$(rnd)"
 printf 'throwaway\n' > "$WORK/identity.pem"
 cat > "$ENV_FILE" <<EOF
 POSTGRES_DB=storefront
@@ -78,9 +80,45 @@ legacy="$(catalog db "$SF_BOOT" storefront "select count(*) from pg_class c join
 [ "$legacy" -gt 0 ] || fail "the pre-split layout has no tables owned by the bootstrap superuser"
 echo "OK $legacy storefront tables owned by the bootstrap superuser"
 
+echo "== an older release still connected as the bootstrap superuser: provisioning refuses and changes nothing =="
+# an idle connection, like one an old process keeps in its pool
+PGPASSWORD="$SF_BOOT_PW" docker run -d --name "${PROJ}_stale" --network "${PROJ}_default" -e PGPASSWORD "$PG_IMAGE" \
+  sh -c "sleep 600 | psql -h db -U $SF_BOOT -d storefront" >/dev/null
+sleep 4
+if dc up --exit-code-from storefront-migrate storefront-migrate >/dev/null 2>&1; then
+  fail "provisioning ran beside an open bootstrap session"
+fi
+dc logs storefront-db-provision >"$WORK/refused.log" 2>&1
+grep -q "open sessions of the bootstrap superuser" "$WORK/refused.log" || { tail -20 "$WORK/refused.log"; fail "the refusal does not name the open sessions"; }
+[ "$(catalog db "$SF_BOOT" storefront "select count(*) from pg_roles where rolname in ('storefront_migrator', 'storefront_runtime')")" = 0 ] \
+  || fail "provisioning changed roles before refusing"
+docker rm -f "${PROJ}_stale" >/dev/null
+for _ in $(seq 1 30); do
+  [ "$(catalog db "$SF_BOOT" storefront "select count(*) from pg_stat_activity where usename = current_user and backend_type = 'client backend' and pid <> pg_backend_pid()")" = 0 ] && break
+  sleep 1
+done
+echo "OK provisioning refused beside an open bootstrap session and left the roles untouched"
+
 echo "== release: provisioning as a dependency of each migration job, then the migrations =="
 dc up --exit-code-from storefront-migrate storefront-migrate >"$WORK/storefront-release.log" 2>&1 \
   || { tail -20 "$WORK/storefront-release.log"; fail "the storefront release migration failed"; }
+
+echo "== operations volume with the old dev bootstrap password: production provisioning refuses it =="
+if dc up --exit-code-from operations-migrate operations-migrate >/dev/null 2>&1; then
+  fail "production provisioning accepted the dev bootstrap password"
+fi
+dc logs operations-db-provision >"$WORK/weak.log" 2>&1
+grep -q "production needs a bootstrap password" "$WORK/weak.log" || { tail -20 "$WORK/weak.log"; fail "the refusal does not name the weak bootstrap password"; }
+echo "== one-off bootstrap rotation, as DEPLOY.md runs it =="
+NEW_BOOTSTRAP_PASSWORD="$(rnd)" && export NEW_BOOTSTRAP_PASSWORD
+dc exec -T -e NEW_BOOTSTRAP_PASSWORD operations-db psql -X -q -U ops_user -d operations -f - < ops/postgres/rotate_bootstrap.sql >/dev/null \
+  || fail "the bootstrap rotation failed"
+OPS_BOOT_PW="$NEW_BOOTSTRAP_PASSWORD"
+unset NEW_BOOTSTRAP_PASSWORD
+sed -i "s/^OPERATIONS_DB_PASSWORD=.*/OPERATIONS_DB_PASSWORD=$OPS_BOOT_PW/" "$ENV_FILE"
+out="$(client ops_pass operations-db ops_user operations "select 1" || true)"
+grep -q "password authentication failed" <<<"$out" || fail "the old bootstrap password still authenticates"
+echo "OK the dev bootstrap password was refused, then rotated, and no longer authenticates"
 dc up --exit-code-from operations-migrate operations-migrate >"$WORK/operations-release.log" 2>&1 \
   || { tail -20 "$WORK/operations-release.log"; fail "the operations release migration failed"; }
 echo "== provisioning again converges =="
