@@ -13,12 +13,13 @@ printf 'dummy\n' > "$TMPKEY"
 
 # every mandatory ${VAR:?} referenced by a service that is part of the default production render
 MANDATORY=(
-  DJANGO_SECRET_KEY DJANGO_ALLOWED_HOSTS DATABASE_URL REDIS_URL CART_REDIS_URL RABBITMQ_URL
+  DJANGO_SECRET_KEY DJANGO_ALLOWED_HOSTS REDIS_URL CART_REDIS_URL RABBITMQ_URL
   IDENTITY_JWT_KID IDENTITY_JWT_KEY_FILE
-  POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
+  POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD STOREFRONT_DB_MIGRATOR_PASSWORD STOREFRONT_DB_RUNTIME_PASSWORD
+  OPERATIONS_DB_NAME OPERATIONS_DB_USER OPERATIONS_DB_PASSWORD OPERATIONS_DB_MIGRATOR_PASSWORD OPERATIONS_DB_RUNTIME_PASSWORD
   RABBITMQ_ADMIN_USER RABBITMQ_ADMIN_PASSWORD RABBITMQ_ERLANG_COOKIE
   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD OPERATIONS_COMMANDS_MQ_PASSWORD
-  OPERATIONS_SECRET_KEY OPERATIONS_ALLOWED_HOSTS OPERATIONS_DATABASE_URL OPERATIONS_RABBITMQ_URL
+  OPERATIONS_SECRET_KEY OPERATIONS_ALLOWED_HOSTS OPERATIONS_RABBITMQ_URL
   OPERATIONS_BRIDGE_CONSUME_URL OPERATIONS_BRIDGE_PUBLISH_URL OPERATIONS_COMMANDS_RABBITMQ_URL
 )
 
@@ -26,17 +27,18 @@ MANDATORY=(
 # at a time to prove each is genuinely required
 export DJANGO_SECRET_KEY=ci-django-secret
 export DJANGO_ALLOWED_HOSTS=app.example.com
-export DATABASE_URL=postgres://u:p@db:5432/storefront
 export REDIS_URL=redis://redis:6379/1
 export CART_REDIS_URL=redis://redis:6379/0
 export RABBITMQ_URL=amqp://u:p@rabbitmq:5672/storefront
 export IDENTITY_JWT_KID=prod-1 IDENTITY_JWT_KEY_FILE="$TMPKEY"
 export POSTGRES_DB=storefront POSTGRES_USER=storefront POSTGRES_PASSWORD=ci-pg
+export STOREFRONT_DB_MIGRATOR_PASSWORD=ci-sf-migrator STOREFRONT_DB_RUNTIME_PASSWORD=ci-sf-runtime
+export OPERATIONS_DB_NAME=operations OPERATIONS_DB_USER=operations OPERATIONS_DB_PASSWORD=ci-ops-pg
+export OPERATIONS_DB_MIGRATOR_PASSWORD=ci-ops-migrator OPERATIONS_DB_RUNTIME_PASSWORD=ci-ops-runtime
 export RABBITMQ_ADMIN_USER=ci RABBITMQ_ADMIN_PASSWORD=ci RABBITMQ_ERLANG_COOKIE=ci
 export STOREFRONT_MQ_PASSWORD=ci OPERATIONS_MQ_PASSWORD=ci BRIDGE_MQ_PASSWORD=ci
 export OPERATIONS_COMMANDS_MQ_PASSWORD=ci
 export OPERATIONS_SECRET_KEY=ci-ops-secret OPERATIONS_ALLOWED_HOSTS=ops.example.com
-export OPERATIONS_DATABASE_URL=postgres://u:p@operations-db:5432/operations
 export OPERATIONS_RABBITMQ_URL=amqp://u:p@rabbitmq:5672/operations
 export OPERATIONS_BRIDGE_CONSUME_URL=amqp://u:p@rabbitmq:5672/storefront
 export OPERATIONS_BRIDGE_PUBLISH_URL=amqp://u:p@rabbitmq:5672/operations
@@ -49,6 +51,7 @@ fail=0
 
 # no dev fallbacks / no dev signing material / secret injected as a file / no inline key
 grep -q "ops-dev-insecure" <<<"$rendered" && { echo "FAIL: ops-dev-insecure fallback present"; fail=1; }
+grep -Eq "dev-(storefront|operations)-|ops_user|ops_pass" <<<"$rendered" && { echo "FAIL: dev database credentials fallback present"; fail=1; }
 grep -q "definitions.dev.json" <<<"$rendered" && { echo "FAIL: dev RabbitMQ definitions mounted"; fail=1; }
 grep -q "jwt_private_key.pem" <<<"$rendered" && { echo "FAIL: dev signing-key mount present"; fail=1; }
 grep -q "identity_jwt_private_key" <<<"$rendered" || { echo "FAIL: signing key not injected as a secret"; fail=1; }
@@ -212,43 +215,94 @@ for name, spec in sorted(services.items()):
 found = gaps(services.get("media-init") or {}, ["CHOWN", "DAC_READ_SEARCH"])
 if found:
     failed.append("media-init: " + ", ".join(found))
+for name in ("storefront-db-provision", "operations-db-provision"):
+    spec = services.get(name) or {}
+    found = gaps(spec, [])
+    if str(spec.get("user") or "0").split(":")[0] in ("0", "root"):
+        found.append("runs as root")
+    if found:
+        failed.append(f"{name}: {', '.join(found)}")
 if failed:
     print("FAIL: not hardened: " + "; ".join(failed))
     raise SystemExit(1)
 HARDEN
 
-# every storefront process holds at most its own pool: the sum, plus one manage.py run through dc exec, stays at half of max_connections or less
+# per database, every application process holds at most its own pool: the sum, plus one manage.py run through dc exec, stays at half of max_connections or less
 RENDERED_JSON="$rendered_json" python3 - <<'DBPOOL' || fail=1
 import json, os, pathlib, re
 
 services = json.loads(os.environ["RENDERED_JSON"])["services"]
-settings = pathlib.Path("backend/config/settings.py").read_text(encoding="utf-8")
-default = int(re.search(r'"DJANGO_DB_POOL_MAX_SIZE", default=(\d+)', settings).group(1))
-workers = int(re.search(r'"--workers", "(\d+)"', pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")).group(1))
-configured = re.search(r"max_connections=(\d+)", " ".join(services["db"].get("command") or []))
-limit = int(configured.group(1)) if configured else 100  # the postgres default
-
-budget, parts = 0, []
-for name, spec in sorted(services.items()):
-    if (spec.get("build") or {}).get("dockerfile") != "backend/Dockerfile":
-        continue
-    size = int((spec.get("environment") or {}).get("DJANGO_DB_POOL_MAX_SIZE") or default)
-    processes = workers if spec.get("command") is None else 1
-    budget += processes * size
-    parts.append(f"{name} {processes}x{size}")
-exec_size = int((services["backend"].get("environment") or {}).get("DJANGO_DB_POOL_MAX_SIZE") or default)
-budget += exec_size
-parts.append(f"dc exec 1x{exec_size}")
-if budget > limit // 2:
-    print(f"FAIL: storefront database budget {budget} is over half of max_connections {limit}: " + ", ".join(parts))
-    raise SystemExit(1)
-# the runbook states the same sum, counted over the same production render
-stated = re.search(r"=\s+(\d+)\s+из\s+(\d+)\s+`max_connections`", pathlib.Path("DEPLOY.md").read_text(encoding="utf-8"))
-if not stated or (int(stated.group(1)), int(stated.group(2))) != (budget, limit):
-    print(f"FAIL: the storefront database budget in DEPLOY.md is {stated.group(0) if stated else 'missing'}, "
-          f"the production render gives {budget} of {limit}: " + ", ".join(parts))
+deploy = pathlib.Path("DEPLOY.md").read_text(encoding="utf-8")
+SIDES = (
+    ("storefront", "backend/Dockerfile", "backend/config/settings.py", "DJANGO_DB_POOL_MAX_SIZE", "db", "backend"),
+    ("operations", "services/order_operations/Dockerfile", "services/order_operations/config/settings.py",
+     "OPERATIONS_DB_POOL_MAX_SIZE", "operations-db", "operations-api"),
+)
+failed = []
+for side, dockerfile, settings, var, db, exec_service in SIDES:
+    default = int(re.search(rf'"{var}", default=(\d+)', pathlib.Path(settings).read_text(encoding="utf-8")).group(1))
+    workers = re.search(r'"--workers", "(\d+)"', pathlib.Path(dockerfile).read_text(encoding="utf-8"))
+    workers = int(workers.group(1)) if workers else 1  # the gunicorn default
+    configured = re.search(r"max_connections=(\d+)", " ".join(services[db].get("command") or []))
+    limit = int(configured.group(1)) if configured else 100  # the postgres default
+    budget, parts = 0, []
+    for name, spec in sorted(services.items()):
+        if (spec.get("build") or {}).get("dockerfile") != dockerfile:
+            continue
+        size = int((spec.get("environment") or {}).get(var) or default)
+        processes = workers if spec.get("command") is None else 1
+        budget += processes * size
+        parts.append(f"{name} {processes}x{size}")
+    exec_size = int((services[exec_service].get("environment") or {}).get(var) or default)
+    budget += exec_size
+    parts.append(f"dc exec 1x{exec_size}")
+    detail = f"{side} database budget {budget} of {limit} ({', '.join(parts)})"
+    if budget > limit // 2:
+        failed.append(detail + " is over half of max_connections")
+    # the runbook states the same sum, counted over the same production render
+    stated = re.search(rf"соединений {side}:.*?=\s+(\d+)\s+из\s+(\d+)\s+`max_connections`", deploy, re.S)
+    if not stated or (int(stated.group(1)), int(stated.group(2))) != (budget, limit):
+        failed.append(detail + ", DEPLOY.md states " + (f"{stated.group(1)} of {stated.group(2)}" if stated else "none"))
+if failed:
+    print("FAIL: " + "; ".join(failed))
     raise SystemExit(1)
 DBPOOL
+
+# every database has three roles: the bootstrap superuser only provisions, the migrator runs migrations, every other process connects as the runtime role
+RENDERED_JSON="$rendered_json" python3 - <<'DBROLES' || fail=1
+import json, os
+from urllib.parse import urlsplit
+
+services = json.loads(os.environ["RENDERED_JSON"])["services"]
+SIDES = (
+    ("storefront", "backend/Dockerfile", "DATABASE_URL", "db"),
+    ("operations", "services/order_operations/Dockerfile", "OPERATIONS_DATABASE_URL", "operations-db"),
+)
+failed = []
+for side, dockerfile, key, db in SIDES:
+    bootstrap = services[db]["environment"]["POSTGRES_USER"]
+    database = services[db]["environment"]["POSTGRES_DB"]
+    provision = f"{side}-db-provision"
+    env = (services.get(provision) or {}).get("environment") or {}
+    if (env.get("PGHOST"), env.get("PGUSER"), env.get("PGDATABASE"), env.get("DB_MIGRATOR_ROLE"), env.get("DB_RUNTIME_ROLE")) \
+            != (db, bootstrap, database, f"{side}_migrator", f"{side}_runtime"):
+        failed.append(f"{provision} does not provision {side}_migrator and {side}_runtime on {db}/{database} as the bootstrap user")
+    for name, spec in sorted(services.items()):
+        if (spec.get("build") or {}).get("dockerfile") != dockerfile:
+            continue
+        env = spec.get("environment") or {}
+        migrator = str(env.get("RUN_MIGRATIONS", "")) == "1"
+        want = f"{side}_migrator" if migrator else f"{side}_runtime"
+        dsn = urlsplit(str(env.get(key, "")))
+        if (dsn.username, dsn.hostname, dsn.path.lstrip("/")) != (want, db, database):
+            failed.append(f"{name} connects as {dsn.username} to {dsn.hostname}/{dsn.path.lstrip('/')}, expected {want} on {db}/{database}")
+        wait = (spec.get("depends_on") or {}).get(provision) or {}
+        if migrator and wait.get("condition") != "service_completed_successfully":
+            failed.append(f"{name} migrates without waiting for {provision}")
+if failed:
+    print("FAIL: " + "; ".join(failed))
+    raise SystemExit(1)
+DBROLES
 
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
 python3 - <<'DEPLOYDOC' || fail=1
