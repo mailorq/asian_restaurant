@@ -217,6 +217,33 @@ if failed:
     raise SystemExit(1)
 HARDEN
 
+# every storefront process holds at most its own pool: the sum, plus one manage.py run through dc exec, stays at half of max_connections or less
+RENDERED_JSON="$rendered_json" python3 - <<'DBPOOL' || fail=1
+import json, os, pathlib, re
+
+services = json.loads(os.environ["RENDERED_JSON"])["services"]
+settings = pathlib.Path("backend/config/settings.py").read_text(encoding="utf-8")
+default = int(re.search(r'"DJANGO_DB_POOL_MAX_SIZE", default=(\d+)', settings).group(1))
+workers = int(re.search(r'"--workers", "(\d+)"', pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")).group(1))
+configured = re.search(r"max_connections=(\d+)", " ".join(services["db"].get("command") or []))
+limit = int(configured.group(1)) if configured else 100  # the postgres default
+
+budget, parts = 0, []
+for name, spec in sorted(services.items()):
+    if (spec.get("build") or {}).get("dockerfile") != "backend/Dockerfile":
+        continue
+    size = int((spec.get("environment") or {}).get("DJANGO_DB_POOL_MAX_SIZE") or default)
+    processes = workers if spec.get("command") is None else 1
+    budget += processes * size
+    parts.append(f"{name} {processes}x{size}")
+exec_size = int((services["backend"].get("environment") or {}).get("DJANGO_DB_POOL_MAX_SIZE") or default)
+budget += exec_size
+parts.append(f"dc exec 1x{exec_size}")
+if budget > limit // 2:
+    print(f"FAIL: storefront database budget {budget} is over half of max_connections {limit}: " + ", ".join(parts))
+    raise SystemExit(1)
+DBPOOL
+
 # the release procedure must render the production stack: a bare `docker compose` there brings up the dev overlay with its mounts and fallbacks
 python3 - <<'DEPLOYDOC' || fail=1
 import pathlib, re
