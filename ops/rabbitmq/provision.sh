@@ -10,6 +10,8 @@
 # Optional env:
 #   RABBITMQ_NODE  target a remote node (e.g. rabbit@rabbitmq) — set by the one-shot
 #                  rabbitmq-provision service; unset when run inside the broker.
+#   RABBITMQ_MANAGEMENT_HOST RABBITMQ_MANAGEMENT_PORT  management api that declares the
+#                  command exchange, localhost:15672 by default, i.e. inside the broker
 #
 # Run inside the broker container, e.g.:
 #   docker compose exec -T \
@@ -60,7 +62,13 @@ ctl set_permissions -p operations operations_bridge \
 ctl set_permissions -p storefront operations_commands '^$' '^commands$' '^$'
 # the broker refuses a topic permission for an exchange that does not exist, so the exchange is
 # provisioned here; the publisher still holds configure='^$' and cannot create or repair it
-rabbitmqadmin --username "$RABBITMQ_ADMIN_USER" --password "$RABBITMQ_ADMIN_PASSWORD"   --vhost storefront declare exchange --name commands --type topic --durable true
+rabbitmqadmin \
+  --host "${RABBITMQ_MANAGEMENT_HOST:-localhost}" \
+  --port "${RABBITMQ_MANAGEMENT_PORT:-15672}" \
+  --username "$RABBITMQ_ADMIN_USER" \
+  --password "$RABBITMQ_ADMIN_PASSWORD" \
+  --vhost storefront \
+  declare exchange --name commands --type topic --durable true
 # converge, do not merge: a topic permission left over from an older layout would still grant
 # its routing keys
 ctl clear_topic_permissions -p storefront operations_commands 2>/dev/null || true

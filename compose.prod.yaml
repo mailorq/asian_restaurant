@@ -48,8 +48,7 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
 
-  # explicit deployment step: run once (idempotent) to create vhosts/users/permissions
-  #   docker compose -f compose.yaml -f compose.prod.yaml run --rm rabbitmq-provision
+  # release step before migrations and the runtime (DEPLOY.md), idempotent: creates vhosts, users and permissions
   rabbitmq-provision:
     image: rabbitmq:4.3-management-alpine
     profiles: ["provision"]
@@ -59,6 +58,7 @@ services:
         condition: service_healthy
     environment:
       RABBITMQ_NODE: rabbit@rabbitmq
+      RABBITMQ_MANAGEMENT_HOST: rabbitmq
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
       RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
       RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}
